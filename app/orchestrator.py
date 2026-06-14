@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import shlex
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,7 +13,13 @@ from typing import Any
 from app.config import DATA_DIR, STATE_FILE, cfg, mock_mode
 from app.guards import GREEN_ENV_FILE, assert_green_only_config, remote_green_env_check_script
 from app.models import Run, StepId, StepStatus, build_steps
-from app.ssh_client import grep_remote_marker, ssh_out
+from app.ssh_client import (
+    grep_marker_after_line_async,
+    grep_remote_marker_async,
+    remote_line_count_async,
+    ssh_out_async,
+    tail_remote_new_lines_async,
+)
 
 RUNS: dict[str, Run] = {}
 ACTIVE_RUN_ID: str | None = None
@@ -42,6 +50,25 @@ def load_state() -> None:
         steps_raw = raw.pop("steps", [])
         steps = [Step(**s) for s in steps_raw]
         RUNS[rid] = Run(steps=steps, **raw)
+    _recover_stale_runs()
+
+
+def _recover_stale_runs() -> None:
+    """Server restart kills asyncio tasks; mark orphaned running jobs as failed."""
+    changed = False
+    for run in RUNS.values():
+        if run.status != StepStatus.RUNNING:
+            continue
+        run.append_log("❌ 平台服务已重启，该任务已中断，请重新点击部署")
+        run.status = StepStatus.FAILED
+        for step in run.steps:
+            if step.status == StepStatus.RUNNING:
+                step.status = StepStatus.FAILED
+                step.message = "服务重启中断"
+                step.finished_at = datetime.now(timezone.utc).isoformat()
+        changed = True
+    if changed:
+        save_state()
 
 
 def step_by_id(run: Run, step_id: StepId):
@@ -64,30 +91,119 @@ def mark_step(run: Run, step_id: StepId, status: StepStatus, message: str = "") 
     save_state()
 
 
-async def wait_marker(
+async def _stream_remote_log(
+    run: Run,
+    host: str,
+    port: str,
+    user: str,
+    password: str,
+    log_path: str,
+    line_cursor: int,
+    prefix: str,
+    max_lines: int = 8,
+) -> int:
+    lines, total = await tail_remote_new_lines_async(
+        host, port, user, password, log_path, line_cursor, max_lines=max_lines,
+    )
+    for line in lines:
+        text = line.strip()
+        if text and "__TOTAL_LINES__" not in text:
+            run.append_log(f"{prefix} {text}")
+    return total
+
+
+async def wait_marker_in_log(
     run: Run,
     step_id: StepId,
     host: str,
     port: str,
     user: str,
     password: str,
-    log_glob: str,
+    log_path: str,
     marker: str,
+    line_offset: int,
     timeout_sec: int,
     poll_sec: int,
+    log_prefix: str,
 ) -> None:
     mark_step(run, step_id, StepStatus.RUNNING)
+    cursor = line_offset
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        if grep_remote_marker(host, port, user, password, log_glob, marker):
+        cursor = await _stream_remote_log(
+            run, host, port, user, password, log_path, cursor, log_prefix,
+        )
+        if await grep_marker_after_line_async(
+            host, port, user, password, log_path, marker, line_offset,
+        ):
             mark_step(run, step_id, StepStatus.SUCCESS, marker)
             run.append_log(f"✅ {marker}")
             save_state()
             return
-        run.append_log(f"等待 {marker} ...")
         save_state()
         await asyncio.sleep(poll_sec)
-    raise TimeoutError(f"超时未看到 {marker}（{timeout_sec}s）")
+    raise TimeoutError(f"超时未看到 {marker}（{timeout_sec}s，日志 {log_path}）")
+
+
+async def _wait_backup_log_path(
+    host: str,
+    port: str,
+    user: str,
+    password: str,
+    manual_log: str,
+    log_dir: str,
+    timeout_sec: int = 180,
+) -> str:
+    pattern = re.compile(r"日志:\s*(/\S+\.log)")
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        out = (
+            await ssh_out_async(
+                host, port, user, password,
+                f"grep -F '日志:' {shlex.quote(manual_log)} 2>/dev/null | tail -1 || true",
+                timeout=30,
+            )
+        ).strip()
+        m = pattern.search(out)
+        if m:
+            return m.group(1)
+        newest = (
+            await ssh_out_async(
+                host, port, user, password,
+                f"ls -1t {shlex.quote(log_dir)}/osh-backup-*.log 2>/dev/null | head -1 || true",
+                timeout=30,
+            )
+        ).strip()
+        if newest:
+            age = (
+                await ssh_out_async(
+                    host, port, user, password,
+                    f"expr $(date +%s) - $(stat -c %Y {shlex.quote(newest)} 2>/dev/null || echo 0)",
+                    timeout=20,
+                )
+            ).strip()
+            try:
+                if int(age) <= 120:
+                    return newest
+            except ValueError:
+                pass
+        await asyncio.sleep(3)
+    raise TimeoutError(f"未找到本次 25 备份日志（wrapper: {manual_log}）")
+
+
+async def _assert_remote_idle(
+    host: str,
+    port: str,
+    user: str,
+    password: str,
+    script_path: str,
+    label: str,
+) -> None:
+    q = shlex.quote(script_path)
+    cmd = f"ps -eo args= | grep -F {q} | grep -v grep | head -1 || true"
+    out = (await ssh_out_async(host, port, user, password, cmd, timeout=30)).strip()
+    if out:
+        raise RuntimeError(f"{label} 仍有任务在运行（{out[:120]}），请等待完成后再部署")
 
 
 MOCK_LOGS: dict[StepId, list[str]] = {
@@ -107,8 +223,8 @@ MOCK_LOGS: dict[StepId, list[str]] = {
 }
 
 
-def _remote_executable(host: str, port: str, user: str, password: str, path: str) -> bool:
-    out = ssh_out(host, port, user, password, f"test -x {path} && echo yes || echo no", timeout=30)
+async def _remote_executable(host: str, port: str, user: str, password: str, path: str) -> bool:
+    out = await ssh_out_async(host, port, user, password, f"test -x {path} && echo yes || echo no", timeout=30)
     return "yes" in out.strip()
 
 
@@ -122,41 +238,72 @@ async def _run_prod_code_sync(
     timeout_sec: int,
 ) -> None:
     sync_script = cfg("PROD_CODE_SYNC_SCRIPT", "/opt/osh-deploy-tools/osh-green-code-sync.sh")
-    sync_log = cfg("PROD_CODE_SYNC_LOG", "/opt/osh-deploy-tools/logs/prod-code-sync.log")
+    sync_log = cfg("PROD_CODE_SYNC_LOG", "/opt/osh-deploy-tools/logs/green-code-sync.log")
     all_marker = "__OSH_PROD_CODE_ALL_DONE__"
     download_marker = "__OSH_PROD_CODE_DOWNLOAD_DONE__"
+    apply_marker = "__OSH_PROD_CODE_APPLY_DONE__"
 
     mark_step(run, StepId.PROD_CODE, StepStatus.RUNNING)
-    # setsid + </dev/null 避免 SSH 会话等待后台下载进程结束（否则易误报 60s 超时）
-    prod_cmd = (
-        f"mkdir -p $(dirname {sync_log}) && "
-        f"setsid bash -c 'bash {sync_script} all >> {sync_log} 2>&1' </dev/null >/dev/null 2>&1 & "
-        f"echo $!"
+    await _assert_remote_idle(prod_host, prod_port, prod_user, prod_pass, sync_script, "149 绿环境 code-sync")
+
+    line_before = await remote_line_count_async(prod_host, prod_port, prod_user, prod_pass, sync_log)
+    run.append_log(f"149 部署日志: {sync_log}（从第 {line_before + 1} 行起监控本次任务）")
+
+    sep_cmd = (
+        f"mkdir -p {shlex.quote(os.path.dirname(sync_log))} && "
+        f"echo '=== deploy run {run.id} ===' >> {shlex.quote(sync_log)}"
     )
-    pid = ssh_out(prod_host, prod_port, prod_user, prod_pass, prod_cmd, timeout=30).strip()
+    await ssh_out_async(prod_host, prod_port, prod_user, prod_pass, sep_cmd, timeout=30)
+    line_offset = await remote_line_count_async(prod_host, prod_port, prod_user, prod_pass, sync_log)
+
+    prod_cmd = (
+        f"mkdir -p {shlex.quote(os.path.dirname(sync_log))} && "
+        f"( setsid bash {shlex.quote(sync_script)} all >> {shlex.quote(sync_log)} 2>&1 < /dev/null & ); "
+        f"sleep 1; pgrep -f {shlex.quote(sync_script)} | tail -1 || echo started"
+    )
+    run.append_log(f"149 启动: bash {sync_script} all")
+    pid = (await ssh_out_async(prod_host, prod_port, prod_user, prod_pass, prod_cmd, timeout=180)).strip()
     run.append_log(f"149 绿环境 code-sync 已启动 PID={pid}")
     save_state()
 
     saw_download = False
+    saw_apply = False
+    cursor = line_offset
     deadline = time.time() + timeout_sec
     while time.time() < deadline:
-        if not saw_download and grep_remote_marker(
-            prod_host, prod_port, prod_user, prod_pass, sync_log, download_marker
+        cursor = await _stream_remote_log(
+            run, prod_host, prod_port, prod_user, prod_pass, sync_log, cursor, "[149 部署]",
+        )
+        if not saw_download and await grep_marker_after_line_async(
+            prod_host, prod_port, prod_user, prod_pass, sync_log, download_marker, line_offset,
         ):
             saw_download = True
-            run.append_log(f"✅ {download_marker}")
+            run.append_log(f"✅ {download_marker}（网盘下载/解压完成）")
             save_state()
-        if grep_remote_marker(prod_host, prod_port, prod_user, prod_pass, sync_log, all_marker):
+        if not saw_apply and await grep_marker_after_line_async(
+            prod_host, prod_port, prod_user, prod_pass, sync_log, apply_marker, line_offset,
+        ):
+            saw_apply = True
+            run.append_log(f"✅ {apply_marker}（已覆盖绿环境代码并重启）")
+            save_state()
+        if await grep_marker_after_line_async(
+            prod_host, prod_port, prod_user, prod_pass, sync_log, all_marker, line_offset,
+        ):
             mark_step(run, StepId.PROD_CODE, StepStatus.SUCCESS, all_marker)
             mark_step(run, StepId.PROD_RESTART, StepStatus.SUCCESS, "code-sync 含重启")
             run.append_log(f"✅ {all_marker}")
+            green_stat = (
+                await ssh_out_async(
+                    prod_host, prod_port, prod_user, prod_pass,
+                    "stat -c 'jar %y' /opt/osh-green/app/osh/osh-backend/backstage-admin.jar 2>/dev/null; "
+                    "stat -c 'frontend %y' /opt/osh-green/app/osh/osh-frontend/html/index.html 2>/dev/null || true",
+                    timeout=30,
+                )
+            ).strip()
+            if green_stat:
+                run.append_log(f"149 绿环境文件更新时间: {green_stat.replace(chr(10), ' | ')}")
             save_state()
             return
-        tail = ssh_out(
-            prod_host, prod_port, prod_user, prod_pass,
-            f"tail -2 {sync_log} 2>/dev/null || true", timeout=30,
-        )
-        run.append_log(tail.strip()[-180:])
         save_state()
         await asyncio.sleep(poll)
     raise TimeoutError(f"code-sync 超时（{timeout_sec}s）")
@@ -216,68 +363,99 @@ async def execute_real_pipeline(run: Run) -> None:
             ("测试机", test_host, test_port, test_user, test_pass),
             ("生产机", prod_host, prod_port, prod_user, prod_pass),
         ]:
-            ssh_out(h, p, u, pw, "echo ok", timeout=30)
+            await ssh_out_async(h, p, u, pw, "echo ok", timeout=30)
             run.append_log(f"SSH {label} {h}:{p} OK")
-        if not _remote_executable(test_host, test_port, test_user, test_pass, backup_script):
+        if not await _remote_executable(test_host, test_port, test_user, test_pass, backup_script):
             raise RuntimeError(f"25 缺少可执行备份脚本: {backup_script}")
         run.append_log(f"25 备份脚本 OK: {backup_script}")
         if use_release:
-            if not _remote_executable(prod_host, prod_port, prod_user, prod_pass, release_script):
+            if not await _remote_executable(prod_host, prod_port, prod_user, prod_pass, release_script):
                 raise RuntimeError(f"已启用 PROD_USE_RELEASE 但 149 无脚本: {release_script}")
             run.append_log(f"149 发版脚本 OK: {release_script}")
         else:
-            if not _remote_executable(prod_host, prod_port, prod_user, prod_pass, sync_script):
+            if not await _remote_executable(prod_host, prod_port, prod_user, prod_pass, sync_script):
                 raise RuntimeError(f"149 缺少可执行同步脚本: {sync_script}")
             run.append_log(f"149 绿环境同步脚本 OK: {sync_script}")
-            env_out = ssh_out(
-                prod_host, prod_port, prod_user, prod_pass,
-                remote_green_env_check_script(GREEN_ENV_FILE),
-                timeout=30,
+            env_out = (
+                await ssh_out_async(
+                    prod_host, prod_port, prod_user, prod_pass,
+                    remote_green_env_check_script(GREEN_ENV_FILE),
+                    timeout=30,
+                )
             ).strip()
             if "green_env_ok" not in env_out:
                 raise RuntimeError(f"149 绿环境配置未通过蓝项目保护校验: {env_out}")
             run.append_log(f"149 {GREEN_ENV_FILE} 校验 OK（/opt/osh-green + osh-g-*）")
-            blue_http = ssh_out(
-                prod_host, prod_port, prod_user, prod_pass,
-                "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:58080/ || echo 000",
-                timeout=20,
+            blue_http = (
+                await ssh_out_async(
+                    prod_host, prod_port, prod_user, prod_pass,
+                    "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:58080/ || echo 000",
+                    timeout=20,
+                )
             ).strip()
             run.append_log(f"蓝项目基线 :58080 HTTP {blue_http}（只读探测，不修改）")
         if not skip_backup:
             lock = cfg("TEST_BACKUP_LOCK", "/www/osh-backup-tools/.backup.lock")
-            locked = ssh_out(test_host, test_port, test_user, test_pass, f"test -f {lock} && echo locked || echo free")
+            locked = await ssh_out_async(test_host, test_port, test_user, test_pass, f"test -f {lock} && echo locked || echo free")
             if "locked" in locked:
-                run.append_log("⚠️ 备份锁存在，可能已有任务在跑")
+                run.append_log("⚠️ 备份锁存在，将检查是否有进程在跑")
+            await _assert_remote_idle(
+                test_host, test_port, test_user, test_pass,
+                backup_script, "25 备份",
+            )
         mark_step(run, StepId.PRECHECK, StepStatus.SUCCESS)
         save_state()
 
         if not skip_backup:
             script = backup_script
             log_dir = cfg("TEST_BACKUP_LOG_DIR", "/www/osh-backup-tools/logs")
+            manual_log = f"{log_dir}/deploy-{run.id}.log"
             mark_step(run, StepId.BACKUP_TRIGGER, StepStatus.RUNNING)
             trigger = (
-                f"cd $(dirname {script}) && "
-                f"if pgrep -f 'osh-backup-25.sh' >/dev/null; then echo already_running; "
-                f"else nohup bash {script} > {log_dir}/manual-$(date +%Y%m%d-%H%M%S).log 2>&1 & echo started; fi"
+                f"mkdir -p {shlex.quote(log_dir)} && "
+                f"( setsid bash {shlex.quote(script)} > {shlex.quote(manual_log)} 2>&1 < /dev/null & ); "
+                f"sleep 1; pgrep -f {shlex.quote(script)} | tail -1 || echo started"
             )
-            out = ssh_out(test_host, test_port, test_user, test_pass, trigger, timeout=60)
-            run.append_log(out.strip())
-            mark_step(run, StepId.BACKUP_TRIGGER, StepStatus.SUCCESS, out.strip())
+            pid = (await ssh_out_async(test_host, test_port, test_user, test_pass, trigger, timeout=180)).strip()
+            run.append_log(f"25 已启动备份 PID={pid}，wrapper 日志: {manual_log}")
+            backup_log = await _wait_backup_log_path(
+                test_host, test_port, test_user, test_pass, manual_log, log_dir,
+            )
+            run.append_log(f"25 备份主日志: {backup_log}")
+            mark_step(run, StepId.BACKUP_TRIGGER, StepStatus.SUCCESS, f"PID={pid}")
             save_state()
 
-            log_glob = f"{log_dir}/osh-backup-*.log {log_dir}/manual-*.log"
             for sid, marker in [
                 (StepId.BACKUP_PACK, "__OSH_BACKUP_PACK_DONE__"),
                 (StepId.BACKUP_UPLOAD, "__OSH_BACKUP_UPLOAD_DONE__"),
                 (StepId.BACKUP_DONE, "__OSH_BACKUP_ALL_DONE__"),
             ]:
-                await wait_marker(run, sid, test_host, test_port, test_user, test_pass, log_glob, marker, backup_timeout, poll)
+                await wait_marker_in_log(
+                    run, sid, test_host, test_port, test_user, test_pass,
+                    backup_log, marker, line_offset=0,
+                    timeout_sec=backup_timeout, poll_sec=poll, log_prefix="[25 备份]",
+                )
+
+            state_ok = cfg("TEST_BACKUP_STATE_OK", "/www/osh-backup-tools/.backup-last-ok")
+            upload_marker = cfg("TEST_BACKUP_UPLOAD_MARKER", "/www/osh-backup-tools/上传成功.txt")
+            ok_ts = (
+                await ssh_out_async(
+                    test_host, test_port, test_user, test_pass,
+                    f"echo -n 'state_ok='; cat {shlex.quote(state_ok)} 2>/dev/null || echo missing; "
+                    f"echo; echo -n 'upload_marker='; head -3 {shlex.quote(upload_marker)} 2>/dev/null | tr '\\n' ' ' || echo missing",
+                    timeout=30,
+                )
+            ).strip().replace("\n", " | ")
+            run.append_log(f"25 网盘上传确认: {ok_ts}")
 
         if use_release:
             release_log = cfg("PROD_RELEASE_LOG", "/opt/osh-deploy-tools/logs/prod-release.log")
             mark_step(run, StepId.PROD_PRE_BACKUP, StepStatus.RUNNING)
-            prod_cmd = f"mkdir -p $(dirname {release_log}) && nohup bash {release_script} all >> {release_log} 2>&1 & echo $!"
-            pid = ssh_out(prod_host, prod_port, prod_user, prod_pass, prod_cmd, timeout=60).strip()
+            prod_cmd = (
+                f"mkdir -p $(dirname {shlex.quote(release_log)}) && "
+                f"nohup bash {shlex.quote(release_script)} all >> {shlex.quote(release_log)} 2>&1 & echo $!"
+            )
+            pid = (await ssh_out_async(prod_host, prod_port, prod_user, prod_pass, prod_cmd, timeout=90)).strip()
             run.append_log(f"prod-release PID={pid}")
             save_state()
 
@@ -292,7 +470,7 @@ async def execute_real_pipeline(run: Run) -> None:
             seen: set[StepId] = set()
             deadline = time.time() + release_timeout
             while time.time() < deadline:
-                if grep_remote_marker(prod_host, prod_port, prod_user, prod_pass, release_log, "__OSH_PROD_RELEASE_DONE__"):
+                if await grep_remote_marker_async(prod_host, prod_port, prod_user, prod_pass, release_log, "__OSH_PROD_RELEASE_DONE__"):
                     for sid, _ in step_markers:
                         if step_by_id(run, sid).status not in (StepStatus.SKIPPED, StepStatus.SUCCESS):
                             mark_step(run, sid, StepStatus.SUCCESS)
@@ -300,7 +478,7 @@ async def execute_real_pipeline(run: Run) -> None:
                 for sid, marker in step_markers:
                     if sid in seen or step_by_id(run, sid).status == StepStatus.SKIPPED:
                         continue
-                    if grep_remote_marker(prod_host, prod_port, prod_user, prod_pass, release_log, marker):
+                    if await grep_remote_marker_async(prod_host, prod_port, prod_user, prod_pass, release_log, marker):
                         mark_step(run, sid, StepStatus.SUCCESS, marker)
                         run.append_log(f"✅ {marker}")
                         seen.add(sid)
@@ -309,7 +487,7 @@ async def execute_real_pipeline(run: Run) -> None:
                         not seen or sid == step_markers[len(seen)][0]
                     ):
                         mark_step(run, sid, StepStatus.RUNNING)
-                tail = ssh_out(prod_host, prod_port, prod_user, prod_pass, f"tail -2 {release_log} 2>/dev/null || true", timeout=30)
+                tail = await ssh_out_async(prod_host, prod_port, prod_user, prod_pass, f"tail -2 {release_log} 2>/dev/null || true", timeout=30)
                 run.append_log(tail.strip()[-180:])
                 save_state()
                 await asyncio.sleep(poll)
@@ -332,7 +510,7 @@ async def execute_real_pipeline(run: Run) -> None:
             f"c3=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 15 http://127.0.0.1:{nacos_p}/nacos/ || echo 000); "
             f"echo nginx=$c1 api=$c2 nacos=$c3"
         )
-        vout = ssh_out(prod_host, prod_port, prod_user, prod_pass, verify_script, timeout=60)
+        vout = await ssh_out_async(prod_host, prod_port, prod_user, prod_pass, verify_script, timeout=60)
         run.append_log(vout.strip())
         m = re.search(r"nginx=(\d+).*api=(\d+).*nacos=(\d+)", vout)
         if not m:
@@ -341,10 +519,12 @@ async def execute_real_pipeline(run: Run) -> None:
         if c1 not in ("200", "301", "302") or c2 not in ("200", "401") or c3 not in ("200", "302"):
             raise RuntimeError(f"绿环境验收失败 nginx={c1} api={c2} nacos={c3}")
         mark_step(run, StepId.PROD_VERIFY, StepStatus.SUCCESS, vout.strip())
-        blue_after = ssh_out(
-            prod_host, prod_port, prod_user, prod_pass,
-            "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:58080/ || echo 000",
-            timeout=20,
+        blue_after = (
+            await ssh_out_async(
+                prod_host, prod_port, prod_user, prod_pass,
+                "curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:58080/ || echo 000",
+                timeout=20,
+            )
         ).strip()
         run.append_log(f"蓝项目部署后 :58080 HTTP {blue_after}（应仍正常，未触碰蓝栈）")
 
@@ -377,6 +557,10 @@ async def start_run(mode: str) -> str:
         raise ValueError("invalid mode")
 
     async with _lock:
+        for existing in RUNS.values():
+            if existing.status == StepStatus.RUNNING:
+                raise RuntimeError("已有任务在运行，请等待完成或刷新页面")
+
         if ACTIVE_RUN_ID:
             active = RUNS.get(ACTIVE_RUN_ID)
             if active and active.status == StepStatus.RUNNING:
@@ -395,6 +579,19 @@ async def start_run(mode: str) -> str:
         )
         RUNS[run_id] = run
         ACTIVE_RUN_ID = run_id
+        run.append_log(f"🚀 任务已启动 mode={mode}")
+        if mode == "standard":
+            run.append_log("📦 完整流程：25 打包备份 → 上传网盘 → 149 下载 → 绿环境部署")
+        elif mode == "skip_backup":
+            run.append_log("⏭️ 已跳过 25 备份/网盘上传（直接用网盘现有包）。要更新网盘请点「一键部署绿环境」")
+            for s in run.steps:
+                if s.id.value.startswith("backup_"):
+                    s.message = "本任务选择了跳过备份"
+        elif mode == "code_only":
+            run.append_log("⏭️ 仅更代码：跳过 25 备份，149 只同步代码")
+            for s in run.steps:
+                if s.id.value.startswith("backup_"):
+                    s.message = "本任务选择了跳过备份"
         save_state()
         asyncio.create_task(execute_pipeline(run))
         return run_id

@@ -1,5 +1,5 @@
-import { computed, onMounted, ref } from 'vue'
-import { fetchHealth, fetchRuns, startDeploy, streamRun } from '../api/deploy.js'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { fetchHealth, fetchRun, fetchRuns, startDeploy, streamRun } from '../api/deploy.js'
 
 export function useDeployRun() {
   const health = ref(null)
@@ -8,6 +8,8 @@ export function useDeployRun() {
   const busy = ref(false)
   const error = ref('')
   let es = null
+  let pollTimer = null
+  let activeRunId = null
 
   const progress = computed(() => {
     if (!run.value?.steps?.length) return 0
@@ -25,6 +27,50 @@ export function useDeployRun() {
     return map[run.value.status] || run.value.status
   })
 
+  function stopPoll() {
+    if (pollTimer) {
+      clearInterval(pollTimer)
+      pollTimer = null
+    }
+  }
+
+  function closeStream() {
+    if (es) {
+      es.close()
+      es = null
+    }
+  }
+
+  function applyRun(data) {
+    run.value = data
+    if (data.status === 'success' || data.status === 'failed') {
+      busy.value = false
+      activeRunId = null
+      stopPoll()
+      closeStream()
+      loadHistory()
+    }
+  }
+
+  function startPoll(runId) {
+    stopPoll()
+    pollTimer = setInterval(async () => {
+      if (!busy.value || !runId) return
+      try {
+        applyRun(await fetchRun(runId))
+      } catch (_) {
+        /* ignore transient fetch errors while task runs */
+      }
+    }, 2000)
+  }
+
+  function attachRun(runId) {
+    activeRunId = runId
+    closeStream()
+    es = streamRun(runId, applyRun)
+    startPoll(runId)
+  }
+
   async function loadHealth() {
     health.value = await fetchHealth()
   }
@@ -33,16 +79,19 @@ export function useDeployRun() {
     history.value = await fetchRuns()
   }
 
-  function applyRun(data) {
-    run.value = data
-    if (data.status === 'success' || data.status === 'failed') {
-      busy.value = false
-      if (es) {
-        es.close()
-        es = null
-      }
-      loadHistory()
+  async function resumeRunningJob() {
+    const running = history.value.find((r) => r.status === 'running')
+    if (!running) return
+    const detail = await fetchRun(running.id)
+    // Do not attach to zombie jobs (no log progress after server restart)
+    if (detail.status !== 'running') {
+      run.value = detail
+      return
     }
+    busy.value = true
+    activeRunId = running.id
+    run.value = detail
+    attachRun(running.id)
   }
 
   async function start(mode) {
@@ -50,17 +99,25 @@ export function useDeployRun() {
     busy.value = true
     try {
       const { run_id } = await startDeploy(mode)
-      if (es) es.close()
-      es = streamRun(run_id, applyRun)
+      run.value = await fetchRun(run_id)
+      attachRun(run_id)
     } catch (e) {
-      error.value = e.message
+      error.value = e.message || String(e)
       busy.value = false
+      stopPoll()
+      closeStream()
     }
   }
 
   onMounted(async () => {
     await loadHealth()
     await loadHistory()
+    await resumeRunningJob()
+  })
+
+  onUnmounted(() => {
+    stopPoll()
+    closeStream()
   })
 
   return {

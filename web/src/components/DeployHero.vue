@@ -9,8 +9,18 @@ const props = defineProps({
   progress: Number,
   statusLabel: String,
   runId: String,
+  runMode: String,
   mockMode: Boolean,
   greenUrl: String,
+})
+
+const modeLabel = computed(() => {
+  const map = {
+    standard: '完整部署（含 25 备份上传网盘）',
+    skip_backup: '跳过备份（不更新网盘）',
+    code_only: '仅更代码',
+  }
+  return map[props.runMode] || props.runMode || ''
 })
 
 defineEmits(['start'])
@@ -45,6 +55,12 @@ const ringStatus = computed(() => {
           <span :class="['status', statusLabel === '成功' ? 'ok' : statusLabel === '失败' ? 'err' : '']">
             {{ statusLabel }}
           </span>
+          <template v-if="runMode">
+            <span class="dot-sep">·</span>
+            <NTag size="small" :type="runMode === 'standard' ? 'success' : 'warning'" :bordered="false">
+              {{ modeLabel }}
+            </NTag>
+          </template>
         </div>
         <NSpace class="actions" :size="12">
           <NPopconfirm @positive-click="$emit('start', 'standard')">
@@ -56,10 +72,15 @@ const ringStatus = computed(() => {
             </template>
             将执行：25 备份上传网盘 → 149 下载并部署到绿环境（不修改蓝项目 /opt/osh）
           </NPopconfirm>
-          <NButton size="large" :disabled="busy" @click="$emit('start', 'skip_backup')">
-            <template #icon><NIcon :component="FlashOutline" /></template>
-            跳过备份
-          </NButton>
+          <NPopconfirm @positive-click="$emit('start', 'skip_backup')">
+            <template #trigger>
+              <NButton size="large" :disabled="busy">
+                <template #icon><NIcon :component="FlashOutline" /></template>
+                跳过备份
+              </NButton>
+            </template>
+            不会执行 25 备份与网盘上传，149 直接拉取网盘现有包。若要更新网盘请用「一键部署绿环境」。
+          </NPopconfirm>
           <NButton size="large" quaternary :disabled="busy" @click="$emit('start', 'code_only')">
             <template #icon><NIcon :component="CodeSlashOutline" /></template>
             仅更代码

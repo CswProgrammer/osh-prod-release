@@ -71,6 +71,7 @@ watch(
           :progress="progress"
           :status-label="statusLabel"
           :run-id="run?.id"
+          :run-mode="run?.mode"
           :mock-mode="health?.mock_mode"
           :green-url="health?.green_url"
           @start="start"
