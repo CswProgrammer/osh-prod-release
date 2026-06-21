@@ -7,17 +7,24 @@ import (
 	"strings"
 
 	"github.com/juege/osh-prod-release/internal/config"
+	"github.com/juege/osh-prod-release/internal/migrate"
 	"github.com/juege/osh-prod-release/internal/models"
 	"github.com/juege/osh-prod-release/internal/release"
+	"github.com/juege/osh-prod-release/internal/ssh"
 )
 
 type Handler struct {
 	cfg     *config.Config
 	release *release.Service
+	migrate *migrate.Runner
 }
 
 func New(cfg *config.Config, svc *release.Service) *Handler {
-	return &Handler{cfg: cfg, release: svc}
+	return &Handler{
+		cfg:     cfg,
+		release: svc,
+		migrate: migrate.NewRunner(cfg, ssh.New(cfg)),
+	}
 }
 
 func (h *Handler) auth(w http.ResponseWriter, r *http.Request) bool {
@@ -34,6 +41,7 @@ func (h *Handler) auth(w http.ResponseWriter, r *http.Request) bool {
 
 func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", h.health)
+	mux.HandleFunc("GET /api/deploy/active", h.deployActive)
 	mux.HandleFunc("GET /api/releases", h.listReleases)
 	mux.HandleFunc("POST /api/releases", h.createRelease)
 	mux.HandleFunc("GET /api/releases/{id}", h.getRelease)
@@ -45,6 +53,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/releases/{id}/rollback", h.rollback)
 	mux.HandleFunc("GET /api/traffic/status", h.trafficStatus)
 	mux.HandleFunc("POST /api/items/{itemId}/reviews", h.submitItemReview)
+	mux.HandleFunc("GET /api/migrations", h.listMigrations)
+	mux.HandleFunc("GET /api/migrations/{id}", h.getMigrationSQL)
+	mux.HandleFunc("POST /api/migrations/{id}/execute", h.executeMigration)
+	mux.HandleFunc("POST /api/sql/execute", h.executeSQL)
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +75,11 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 			"backend_ref":   h.cfg.GitHubBackendGitRef,
 			"frontend_ref":  h.cfg.GitHubFrontendGitRef,
 			"boss_reviewer": h.cfg.BossReviewer,
+		},
+		"mysql": map[string]any{
+			"green_container": h.cfg.GreenMySQLContainer,
+			"database":        h.cfg.GreenMySQLDatabase,
+			"configured":      h.cfg.GreenMySQLRootPassword != "",
 		},
 	})
 }
@@ -143,6 +160,27 @@ func (h *Handler) bossApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rel)
+}
+
+func (h *Handler) deployActive(w http.ResponseWriter, r *http.Request) {
+	if !h.auth(w, r) {
+		return
+	}
+	active, err := h.release.GetActiveDeploy(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if active == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"busy": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"busy":   true,
+		"id":     active.ID,
+		"title":  active.Title,
+		"status": active.Status,
+	})
 }
 
 func (h *Handler) deploy(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +286,81 @@ func (h *Handler) submitItemReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rel)
+}
+
+func (h *Handler) listMigrations(w http.ResponseWriter, r *http.Request) {
+	if !h.auth(w, r) {
+		return
+	}
+	list, err := h.migrate.List(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (h *Handler) executeMigration(w http.ResponseWriter, r *http.Request) {
+	if !h.auth(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	var req models.ActionRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if req.Actor == "" {
+		req.Actor = "ops"
+	}
+	res, err := h.migrate.Execute(r.Context(), id, req.Actor)
+	if err != nil {
+		if res != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "result": res})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) getMigrationSQL(w http.ResponseWriter, r *http.Request) {
+	if !h.auth(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	sql, err := h.migrate.ReadSQL(id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "sql": sql})
+}
+
+func (h *Handler) executeSQL(w http.ResponseWriter, r *http.Request) {
+	if !h.auth(w, r) {
+		return
+	}
+	var req struct {
+		SQL   string `json:"sql"`
+		Actor string `json:"actor"`
+		Label string `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if req.Actor == "" {
+		req.Actor = "ops"
+	}
+	res, err := h.migrate.ExecuteRaw(r.Context(), req.Label, req.SQL, req.Actor)
+	if err != nil {
+		if res != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "result": res})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

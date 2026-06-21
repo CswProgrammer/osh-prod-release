@@ -1,0 +1,26 @@
+-- 公告/动态通知表（新建环境用，表已存在时会跳过）
+CREATE TABLE IF NOT EXISTS `osh_announcement` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '公告ID',
+  `title` varchar(200) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL COMMENT '公告内容',
+  `link` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT NULL COMMENT '跳转链接',
+  `icon_code` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT NULL COMMENT '图标编码',
+  `channel` tinyint NOT NULL DEFAULT '1' COMMENT '所属栏目：1-系统动态 2-业务动态',
+  `resource_type` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT NULL COMMENT '关联资源类型：course/book/exam/flashsale/group/info_gap/website/user',
+  `resource_id` bigint DEFAULT NULL COMMENT '关联资源ID',
+  `sort` int NOT NULL DEFAULT '0' COMMENT '排序权重（越大越靠前）',
+  `status` tinyint NOT NULL DEFAULT '0' COMMENT '状态：0-草稿 2-待审核 4-已发布 6-已下架',
+  `start_time` datetime DEFAULT NULL COMMENT '生效开始时间',
+  `end_time` datetime DEFAULT NULL COMMENT '生效结束时间',
+  `source` varchar(30) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs NOT NULL DEFAULT 'manual' COMMENT '来源：manual-人工发布 system-系统自动 module-模块触发',
+  `source_module` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT NULL COMMENT '触发来源模块',
+  `delete_flag` tinyint NOT NULL DEFAULT '0' COMMENT '逻辑删除：0-正常 1-删除',
+  `create_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT '' COMMENT '创建者',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_by` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs DEFAULT '' COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_channel` (`channel`) COMMENT '栏目索引',
+  KEY `idx_status` (`status`) COMMENT '状态索引',
+  KEY `idx_sort` (`sort` DESC) COMMENT '排序索引',
+  KEY `idx_create_time` (`create_time` DESC) COMMENT '时间索引'
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_as_cs COMMENT='公告/动态通知表';

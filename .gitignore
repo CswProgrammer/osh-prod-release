@@ -1,6 +1,7 @@
 config.env
 secrets/
 data/
+chroma/
 web/node_modules/
 web/dist/
 static/dist/

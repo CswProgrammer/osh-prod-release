@@ -138,7 +138,11 @@ func (s *Service) BossApprove(ctx context.Context, id string, req models.BossApp
 	return s.store.GetRelease(ctx, id)
 }
 
-// StartDeploy runs deploy → test → switch pipeline (async-safe with lock).
+func (s *Service) GetActiveDeploy(ctx context.Context) (*models.Release, error) {
+	return s.store.GetActiveDeployingRelease(ctx)
+}
+
+// StartDeploy kicks off deploy in background and returns immediately (frontend polls status).
 func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Release, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -147,8 +151,11 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 	if err != nil {
 		return nil, err
 	}
-	if active != nil && active.ID != id {
-		return nil, fmt.Errorf("another release %s is deploying", active.ID)
+	if active != nil {
+		if active.ID != id {
+			return nil, fmt.Errorf("已有发布单「%s」正在部署中，请等待完成后再部署", active.Title)
+		}
+		return nil, fmt.Errorf("当前发布单正在部署中，请等待完成")
 	}
 
 	rel, err := s.store.GetRelease(ctx, id)
@@ -161,20 +168,34 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 	}
 
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDeploying)
-	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "审批已通过，部署到绿环境")
+	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "审批已通过，准备部署到绿环境")
+
+	go s.executeDeploy(id, actor)
+	return s.store.GetRelease(ctx, id)
+}
+
+func (s *Service) executeDeploy(id, actor string) {
+	ctx := context.Background()
 
 	var out string
 	var errDeploy error
 	if s.cfg.GitHubToken != "" && (s.cfg.GitHubBackendRepo != "" || s.cfg.GitHubFrontendRepo != "") {
-		// Empty overrides → use GITHUB_BACKEND_GIT_REF / GITHUB_FRONTEND_GIT_REF from config.
+		dispatchSince := time.Now().UTC().Add(-15 * time.Second)
 		out, errDeploy = s.deployGH.TriggerGreen149(ctx, "", "", id)
 		if errDeploy == nil {
-			_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "GHA 已触发，等待绿环境就绪…")
-			waitOut, waitErr := s.ssh.WaitGreenAPI(ctx, "28080", 25*time.Minute)
+			_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "GHA 已触发，等待前后端 workflow 跑完（约 3–8 分钟）…")
+			ghaOut, waitErr := s.deployGH.WaitGreenWorkflows(ctx, dispatchSince, 25*time.Minute)
 			if waitErr != nil {
 				errDeploy = waitErr
 			} else {
-				out = out + "; " + waitOut
+				out = out + "; GHA: " + ghaOut
+				_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "GHA 已完成，验证绿环境 HTTP…")
+				waitOut, waitErr := s.ssh.WaitGreenAPI(ctx, "28080", 3*time.Minute)
+				if waitErr != nil {
+					errDeploy = waitErr
+				} else {
+					out = out + "; " + waitOut
+				}
 			}
 		}
 	} else {
@@ -183,12 +204,12 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 	if errDeploy != nil {
 		_ = s.store.UpdateStep(ctx, id, "deploy_standby", "failed", errDeploy.Error())
 		_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusFailed)
-		return nil, errDeploy
+		return
 	}
 	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "success", out)
 	_ = s.store.AddAudit(ctx, actor, "deploy_standby", id, out)
 
-	return s.runAutoTest(ctx, id, actor)
+	_, _ = s.runAutoTest(ctx, id, actor)
 }
 
 func (s *Service) runAutoTest(ctx context.Context, id, actor string) (*models.Release, error) {
@@ -213,6 +234,17 @@ func (s *Service) runAutoTest(ctx context.Context, id, actor string) (*models.Re
 	}
 	_ = s.store.UpdateStep(ctx, id, "auto_test", "success", report.AIVerdict)
 	_ = s.store.AddAudit(ctx, actor, "auto_test_pass", id, report.AIVerdict)
+	return s.finishGreenDeploy(ctx, id, actor, report.AIVerdict)
+}
+
+// finishGreenDeploy marks a green-only pre-release deploy as done (no prod traffic switch).
+func (s *Service) finishGreenDeploy(ctx context.Context, id, actor, msg string) (*models.Release, error) {
+	_ = s.store.UpdateStep(ctx, id, "switch_traffic", "skipped", "绿环境预发，不切生产流量")
+	_ = s.store.UpdateStep(ctx, id, "manual_verify", "skipped", "")
+	_ = s.store.UpdateStep(ctx, id, "sync_standby", "skipped", "")
+	_ = s.store.UpdateStep(ctx, id, "finish", "success", "绿环境部署完成")
+	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDone)
+	_ = s.store.AddAudit(ctx, actor, "green_deploy_done", id, msg)
 	return s.store.GetRelease(ctx, id)
 }
 

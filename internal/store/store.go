@@ -400,8 +400,26 @@ func boolToInt(b bool) int {
 
 func (s *Store) GetActiveDeployingRelease(ctx context.Context) (*models.Release, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id FROM releases WHERE status IN ('deploying','testing','switching','verifying','syncing')
-		ORDER BY updated_at DESC LIMIT 1`)
+		SELECT r.id FROM releases r
+		WHERE r.status = 'deploying'
+		   OR r.status IN ('switching', 'verifying', 'syncing')
+		   OR (
+		     r.status = 'testing'
+		     AND EXISTS (
+		       SELECT 1 FROM release_steps
+		       WHERE release_id = r.id AND step_key = 'auto_test'
+		         AND status IN ('pending', 'running')
+		     )
+		   )
+		   OR (
+		     r.status = 'testing'
+		     AND EXISTS (
+		       SELECT 1 FROM release_steps
+		       WHERE release_id = r.id AND step_key = 'deploy_standby'
+		         AND status = 'running'
+		     )
+		   )
+		ORDER BY r.updated_at DESC LIMIT 1`)
 	var id string
 	if err := row.Scan(&id); err != nil {
 		if err == sql.ErrNoRows {

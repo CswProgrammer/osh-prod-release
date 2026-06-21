@@ -2,7 +2,18 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const state = { health: null, current: null, pollTimer: null, busy: false };
+  const state = { health: null, current: null, pollTimer: null, busy: false, page: 'deploy', activeDeploy: null, activePollTimer: null };
+
+  const PAGES = {
+    deploy: {
+      title: '部署绿环境',
+      subtitle: '4 步向导 · GitHub Actions · 不影响蓝环境生产',
+    },
+    sql: {
+      title: '更新绿环境数据库',
+      subtitle: '自定义 SQL · 仅 osh-g-mysql · 与部署独立',
+    },
+  };
 
   const STEPS = {
     1: {
@@ -34,6 +45,114 @@
       showForm: false,
     },
   };
+
+  function navigate(page) {
+    if (!PAGES[page]) return;
+    state.page = page;
+    localStorage.setItem('osh_page', page);
+    if (location.hash !== `#${page}`) {
+      history.replaceState(null, '', `#${page}`);
+    }
+
+    document.querySelectorAll('.nav-item').forEach((el) => {
+      el.classList.toggle('active', el.dataset.page === page);
+    });
+    document.querySelectorAll('.page').forEach((el) => {
+      const active = el.dataset.page === page;
+      el.classList.toggle('active', active);
+      el.hidden = !active;
+    });
+
+    $('pageTitle').textContent = PAGES[page].title;
+    $('pageSubtitle').textContent = PAGES[page].subtitle;
+  }
+
+  function initSidebar() {
+    const layout = $('appLayout');
+    if (localStorage.getItem('osh_sidebar_collapsed') === '1') {
+      layout.classList.add('collapsed');
+    }
+
+    $('sidebarToggle').addEventListener('click', () => {
+      layout.classList.toggle('collapsed');
+      localStorage.setItem('osh_sidebar_collapsed', layout.classList.contains('collapsed') ? '1' : '0');
+    });
+
+    $('mobileMenuBtn').addEventListener('click', () => {
+      layout.classList.toggle('mobile-open');
+      $('sidebarBackdrop').hidden = !layout.classList.contains('mobile-open');
+    });
+
+    $('sidebarBackdrop').addEventListener('click', () => {
+      layout.classList.remove('mobile-open');
+      $('sidebarBackdrop').hidden = true;
+    });
+
+    document.querySelectorAll('.nav-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        navigate(btn.dataset.page);
+        layout.classList.remove('mobile-open');
+        $('sidebarBackdrop').hidden = true;
+      });
+    });
+  }
+
+  function initPageFromHash() {
+    const hash = (location.hash || '').replace('#', '');
+    navigate(PAGES[hash] ? hash : (localStorage.getItem('osh_page') || 'deploy'));
+  }
+
+  function isOtherDeployBusy() {
+    return state.activeDeploy?.busy && state.activeDeploy.id !== state.current?.id;
+  }
+
+  function isAnyDeployBusy() {
+    return !!state.activeDeploy?.busy;
+  }
+
+  async function loadActiveDeploy() {
+    try {
+      const d = await api('/api/deploy/active');
+      state.activeDeploy = d.busy ? d : null;
+    } catch {
+      state.activeDeploy = null;
+    }
+    renderDeployLock();
+    scheduleActivePoll();
+  }
+
+  function renderDeployLock() {
+    const banner = $('deployLockBanner');
+    const text = $('deployLockText');
+    if (!banner || !text) return;
+
+    if (!isAnyDeployBusy()) {
+      banner.hidden = true;
+      return;
+    }
+
+    const d = state.activeDeploy;
+    const isOther = isOtherDeployBusy();
+    banner.hidden = false;
+    banner.classList.toggle('self', !isOther);
+    text.textContent = isOther
+      ? `发布单「${d.title}」正在部署中，请等待完成后再发起新的部署`
+      : `当前发布单正在部署中，请等待完成…`;
+  }
+
+  function scheduleActivePoll() {
+    if (state.activePollTimer) clearInterval(state.activePollTimer);
+    state.activePollTimer = null;
+    if (!isAnyDeployBusy()) return;
+    state.activePollTimer = setInterval(async () => {
+      await loadActiveDeploy();
+      if (!isAnyDeployBusy()) {
+        clearInterval(state.activePollTimer);
+        state.activePollTimer = null;
+        renderUI();
+      }
+    }, 4000);
+  }
 
   async function api(path, opts = {}) {
     const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
@@ -109,22 +228,37 @@
     });
   }
 
+  function isDeployInProgress(rel) {
+    if (!rel) return false;
+    if (currentStep(rel) !== 4) return false;
+    const deploy = deployStep(rel);
+    const auto = autoTestStep(rel);
+    if (rel.status === 'deploying' && deploy?.status !== 'success') return true;
+    if (rel.status === 'testing' && deploy?.status === 'success' && auto?.status !== 'success') return true;
+    if (deploy?.status === 'running' || auto?.status === 'running') return true;
+    return false;
+  }
+
   function renderUI() {
     const rel = state.current;
     const step = currentStep(rel);
     const cfg = STEPS[step] || STEPS[4];
+    const inProgress = isDeployInProgress(rel);
 
-    renderStepper(step === 0 ? 5 : step);
+    renderStepper(step === 0 ? 4 : step);
 
-    $('actionForm').style.display = cfg.showForm ? 'block' : 'none';
+    $('actionForm').style.display = step === 1 && cfg.showForm ? 'block' : 'none';
     $('successBox').hidden = step !== 0;
-    $('waitingBox').hidden = !rel || !['deploying', 'testing'].includes(rel.status);
-    $('mainBtn').hidden = step === 0 || (rel && ['deploying', 'testing'].includes(rel.status));
+    $('waitingBox').hidden = !inProgress;
+    $('mainBtn').hidden = step === 0 || step === -1 || inProgress || (step === 4 && isOtherDeployBusy());
+    const resetBtn = $('btnNewDeploy');
+    if (resetBtn) resetBtn.hidden = !(step === 0 || step === -1) || isAnyDeployBusy();
 
     if (step === 0) {
       const deploy = deployStep(rel);
       const auto = autoTestStep(rel);
       const testWarn = auto?.status === 'failed' || rel?.status === 'failed';
+      if (resetBtn) resetBtn.textContent = '再部署一遍 →';
       $('stepBadge').textContent = '完成';
       $('actionTitle').textContent = testWarn ? '绿环境已部署（测试有警告）' : '部署完成';
       $('actionDesc').textContent = testWarn
@@ -138,10 +272,18 @@
       $('actionTitle').textContent = '部署失败';
       $('actionDesc').textContent = rel?.steps?.find((s) => s.status === 'failed')?.message || '请展开下方日志查看原因，或到 GitHub Actions 查日志。';
       $('mainBtn').hidden = true;
+      if (resetBtn) resetBtn.textContent = '重新开始 →';
       return;
     }
 
-    if (rel && ['deploying', 'testing'].includes(rel.status)) {
+    if (step === 4 && isOtherDeployBusy() && !inProgress) {
+      $('stepBadge').textContent = '第 4 步';
+      $('actionTitle').textContent = '暂不可部署';
+      $('actionDesc').textContent = `发布单「${state.activeDeploy.title}」正在部署中，同一时间只能跑一个部署任务，请等待完成。`;
+      return;
+    }
+
+    if (rel && inProgress) {
       const deploy = deployStep(rel);
       if (deploy?.status === 'success') {
         $('stepBadge').textContent = '第 4 步';
@@ -154,7 +296,7 @@
       $('actionTitle').textContent = rel.status === 'deploying' ? '正在部署…' : '正在自动测试…';
       $('actionDesc').textContent = '无需操作，等待即可。';
       $('waitingText').textContent = rel.status === 'deploying'
-        ? 'GitHub Actions 正在构建并上传到 149…（约 2–5 分钟）'
+        ? 'GitHub Actions 正在跑前后端 workflow…（约 3–8 分钟，跑完才会显示成功）'
         : '绿环境已就绪，正在跑自动测试…';
       return;
     }
@@ -163,6 +305,7 @@
     $('actionTitle').textContent = cfg.title;
     $('actionDesc').textContent = cfg.desc;
     $('mainBtnText').textContent = cfg.btn;
+    renderDeployLock();
   }
 
   function renderLogs(rel) {
@@ -183,6 +326,7 @@
     const h = await api('/api/health');
     state.health = h;
     const d = h.deploy || {};
+    const mysql = h.mysql || {};
     $('modeBadge').textContent = h.mock_mode ? '演示模式' : '已连接';
     $('modeBadge').className = `badge ${h.mock_mode ? 'mock' : 'live'}`;
     $('ghaBadge').textContent = d.gha_enabled ? 'GitHub 部署' : 'GHA 未配置';
@@ -195,6 +339,86 @@
     }
     $('footerBackend').textContent = d.backend_ref || '—';
     $('footerFrontend').textContent = d.frontend_ref || '—';
+
+    const tip = $('sqlTip');
+    if (tip) {
+      tip.textContent = mysql.configured
+        ? `目标：${mysql.green_container || 'osh-g-mysql'} / ${mysql.database || 'backstage'}`
+        : '请在 config.env 配置 GREEN_MYSQL_ROOT_PASSWORD 后才能执行 SQL。';
+    }
+  }
+
+  async function loadSqlTemplates() {
+    const sel = $('sqlTemplate');
+    if (!sel) return;
+    try {
+      const list = await api('/api/migrations');
+      sel.innerHTML = '<option value="">从模板填入（可选）</option>' +
+        list.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.description || m.name)}</option>`).join('');
+    } catch {
+      sel.innerHTML = '<option value="">无可用模板</option>';
+    }
+  }
+
+  async function loadTemplateIntoEditor() {
+    const id = $('sqlTemplate').value;
+    if (!id) { toast('请先选择模板', 'error'); return; }
+    const data = await api(`/api/migrations/${id}`);
+    $('customSql').value = data.sql || '';
+    if (!$('sqlLabel').value.trim()) $('sqlLabel').value = id;
+    toast('模板已填入，请检查后再执行');
+  }
+
+  function formatSqlError(msg) {
+    const raw = String(msg || '');
+    const lines = raw.split('\n').filter((l) => !l.includes('Using a password on the command line'));
+    const text = lines.join('\n').trim() || raw;
+    if (/1050.*already exists/i.test(text)) {
+      const m = text.match(/Table '([^']+)' already exists/i);
+      const tbl = m ? m[1] : '该表';
+      return `表 ${tbl} 已存在，无需重复建表。\n\n若只是确认结构，可执行：\nSHOW CREATE TABLE ${tbl};\n\n若要改字段，请用 ALTER TABLE，或从模板选「001」使用 CREATE TABLE IF NOT EXISTS。\n\n---\n${text}`;
+    }
+    if (/1060.*Duplicate column/i.test(text)) {
+      return `字段已存在，无需重复 ADD COLUMN。\n\n---\n${text}`;
+    }
+    if (/1091.*Can't DROP/i.test(text)) {
+      return `要删除的字段/索引不存在，请先用 SHOW COLUMNS 确认当前表结构。\n\n---\n${text}`;
+    }
+    return text;
+  }
+
+  async function executeCustomSql() {
+    if (state.busy) return;
+    const sql = $('customSql').value.trim();
+    if (!sql) { toast('请先填写 SQL', 'error'); return; }
+    const actor = $('author').value.trim() || 'ops';
+    const label = $('sqlLabel').value.trim() || 'custom';
+    if (!confirm(`确认将以下 SQL 执行到绿环境 MySQL？\n\n目标：osh-g-mysql / backstage\n\n此操作不可自动回滚。`)) return;
+
+    state.busy = true;
+    $('loading').classList.add('show');
+    $('btnExecSql').disabled = true;
+    const resultEl = $('sqlResult');
+    resultEl.hidden = true;
+    try {
+      const res = await api('/api/sql/execute', {
+        method: 'POST',
+        body: JSON.stringify({ sql, actor, label }),
+      });
+      resultEl.hidden = false;
+      resultEl.textContent = `✓ 执行成功\n${res.output || ''}`;
+      resultEl.className = 'sql-result ok';
+      toast('SQL 已执行到绿库');
+    } catch (err) {
+      resultEl.hidden = false;
+      resultEl.textContent = `✗ 执行失败\n${formatSqlError(err.message || String(err))}`;
+      resultEl.className = 'sql-result err';
+      toast(formatSqlError(err.message || String(err)).split('\n')[0], 'error');
+    } finally {
+      state.busy = false;
+      $('loading').classList.remove('show');
+      $('btnExecSql').disabled = false;
+    }
   }
 
   async function loadTraffic() {
@@ -233,8 +457,31 @@
     toast('已切换到：' + state.current.title);
   }
 
+  function resetDeploy() {
+    if (isAnyDeployBusy()) {
+      toast('有部署任务进行中，请等待完成后再新建', 'error');
+      return;
+    }
+    if (state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    state.current = null;
+    $('title').value = '';
+    $('logFold').open = false;
+    const resetBtn = $('btnNewDeploy');
+    if (resetBtn) resetBtn.textContent = '再部署一遍 →';
+    renderUI();
+    renderLogs(null);
+    loadList();
+    toast('已重置，请填写新的发布名称开始部署');
+  }
+
   async function autoPickRelease(list) {
-    const active = list.find((r) => !['done', 'failed', 'rolledback'].includes(r.status));
+    const active = list.find((r) => {
+      const step = currentStep(r);
+      return step > 0 || isDeployInProgress(r);
+    });
     if (active) await select(active.id);
   }
 
@@ -296,12 +543,28 @@
   }
 
   async function deployGreen() {
+    if (isOtherDeployBusy()) {
+      throw new Error(`发布单「${state.activeDeploy.title}」正在部署中，请等待完成`);
+    }
     const actor = $('author').value.trim() || 'ops';
-    state.current = await api(`/api/releases/${state.current.id}/deploy`, {
+    state.current = { ...state.current, status: 'deploying' };
+    state.activeDeploy = {
+      busy: true,
+      id: state.current.id,
+      title: state.current.title,
+      status: 'deploying',
+    };
+    renderUI();
+    renderDeployLock();
+
+    const rel = await api(`/api/releases/${state.current.id}/deploy`, {
       method: 'POST',
       body: JSON.stringify({ actor }),
     });
-    toast('已触发部署，请等待…');
+    state.current = rel;
+    toast('已触发部署，正在等待 GitHub Actions…');
+    $('logFold').open = true;
+    await loadActiveDeploy();
     schedulePoll();
   }
 
@@ -315,7 +578,10 @@
       if (step === 1) await createRelease();
       else if (step === 2) await submitReview();
       else if (step === 3) await completeApproval();
-      else if (step === 4) await deployGreen();
+      else if (step === 4) {
+        $('loading').classList.remove('show');
+        await deployGreen();
+      }
       renderUI();
       renderLogs(state.current);
       await loadList();
@@ -333,34 +599,51 @@
 
   function schedulePoll() {
     if (state.pollTimer) clearInterval(state.pollTimer);
-    if (!state.current || !['deploying', 'testing'].includes(state.current.status)) return;
+    state.pollTimer = null;
+    if (!state.current) return;
+    const step = currentStep(state.current);
+    if (!isDeployInProgress(state.current) && step !== 4) return;
     state.pollTimer = setInterval(async () => {
       try {
+        if (!state.current) return;
         state.current = await api(`/api/releases/${state.current.id}`);
         renderUI();
         renderLogs(state.current);
         await loadList();
-        if (!['deploying', 'testing'].includes(state.current.status)) {
+        await loadActiveDeploy();
+        if (!isDeployInProgress(state.current)) {
           clearInterval(state.pollTimer);
           state.pollTimer = null;
-          if (state.current.status === 'done') toast('部署完成！请打开绿环境验收');
+          const step = currentStep(state.current);
+          if (step === 0) toast('部署完成！请打开绿环境验收');
           else if (state.current.status === 'failed') toast('部署失败，请查看日志', 'error');
         }
       } catch { /* ignore */ }
-    }, 5000);
+    }, 3000);
   }
 
   async function boot() {
+    initSidebar();
+    initPageFromHash();
     $('mainBtn').addEventListener('click', handleMainAction);
+    $('btnNewDeploy')?.addEventListener('click', resetDeploy);
+    $('btnExecSql')?.addEventListener('click', executeCustomSql);
+    $('btnLoadTemplate')?.addEventListener('click', loadTemplateIntoEditor);
     renderUI();
     renderLogs(null);
     try {
       await loadHealth();
       await loadTraffic();
+      await loadActiveDeploy();
+      await loadSqlTemplates();
       const list = await api('/api/releases');
       await loadList();
       await autoPickRelease(list);
       if (!state.current) renderUI();
+      if (state.current && (isDeployInProgress(state.current) || state.current.status === 'deploying')) {
+        await loadActiveDeploy();
+        schedulePoll();
+      }
     } catch (err) {
       $('modeBadge').textContent = '未连接';
       $('modeBadge').className = 'badge offline';

@@ -31,6 +31,10 @@ type Config struct {
 	AnalyzerURL           string
 	BossReviewer          string
 	APIToken              string
+	GreenMySQLContainer   string
+	GreenMySQLDatabase    string
+	GreenMySQLRootPassword string
+	MigrationsDir         string
 }
 
 func Load(path string) (*Config, error) {
@@ -47,6 +51,9 @@ func Load(path string) (*Config, error) {
 		BlueCodeSyncScript:  "/opt/osh-deploy-tools/osh-prod-code-sync.sh",
 		AnalyzerURL:         "http://127.0.0.1:8766",
 		BossReviewer:        "觉哥",
+		GreenMySQLContainer: "osh-g-mysql",
+		GreenMySQLDatabase:  "backstage",
+		MigrationsDir:       "./migrations",
 	}
 	if path == "" {
 		return c, nil
@@ -141,5 +148,15 @@ func Load(path string) (*Config, error) {
 		c.BossReviewer = v
 	}
 	c.APIToken = kv["API_TOKEN"]
+	if v := kv["GREEN_MYSQL_CONTAINER"]; v != "" {
+		c.GreenMySQLContainer = v
+	}
+	if v := kv["GREEN_MYSQL_DATABASE"]; v != "" {
+		c.GreenMySQLDatabase = v
+	}
+	c.GreenMySQLRootPassword = kv["GREEN_MYSQL_ROOT_PASSWORD"]
+	if v := kv["MIGRATIONS_DIR"]; v != "" {
+		c.MigrationsDir = v
+	}
 	return c, sc.Err()
 }
