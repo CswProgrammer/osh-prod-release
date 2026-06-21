@@ -19,6 +19,7 @@ type Config struct {
 	TrafficSwitchScript   string
 	GreenCodeSyncScript   string
 	BlueCodeSyncScript    string
+	StandbySyncScript   string
 	GitHubRepo            string
 	GitHubBackendRepo          string
 	GitHubFrontendRepo         string
@@ -31,10 +32,13 @@ type Config struct {
 	AnalyzerURL           string
 	BossReviewer          string
 	APIToken              string
-	GreenMySQLContainer   string
-	GreenMySQLDatabase    string
+	GreenMySQLContainer    string
+	GreenMySQLDatabase     string
 	GreenMySQLRootPassword string
-	MigrationsDir         string
+	BlueMySQLContainer     string
+	BlueMySQLDatabase      string
+	BlueMySQLRootPassword  string
+	MigrationsDir          string
 }
 
 func Load(path string) (*Config, error) {
@@ -49,10 +53,13 @@ func Load(path string) (*Config, error) {
 		TrafficSwitchScript: "/opt/osh-green/005-scripts/osh-traffic-switch.sh",
 		GreenCodeSyncScript: "/opt/osh-deploy-tools/osh-green-code-sync.sh",
 		BlueCodeSyncScript:  "/opt/osh-deploy-tools/osh-prod-code-sync.sh",
+		StandbySyncScript:   "/opt/osh-green/005-scripts/osh-prod-standby-sync.sh",
 		AnalyzerURL:         "http://127.0.0.1:8766",
 		BossReviewer:        "觉哥",
 		GreenMySQLContainer: "osh-g-mysql",
 		GreenMySQLDatabase:  "backstage",
+		BlueMySQLContainer:  "osh-mysql",
+		BlueMySQLDatabase:   "backstage",
 		MigrationsDir:       "./migrations",
 	}
 	if path == "" {
@@ -132,6 +139,9 @@ func Load(path string) (*Config, error) {
 	if v := kv["BLUE_CODE_SYNC_SCRIPT"]; v != "" {
 		c.BlueCodeSyncScript = v
 	}
+	if v := kv["STANDBY_SYNC_SCRIPT"]; v != "" {
+		c.StandbySyncScript = v
+	}
 	c.GitHubRepo = kv["GITHUB_REPO"]
 	c.GitHubBackendRepo = kv["GITHUB_BACKEND_REPO"]
 	c.GitHubFrontendRepo = kv["GITHUB_FRONTEND_REPO"]
@@ -155,6 +165,16 @@ func Load(path string) (*Config, error) {
 		c.GreenMySQLDatabase = v
 	}
 	c.GreenMySQLRootPassword = kv["GREEN_MYSQL_ROOT_PASSWORD"]
+	if v := kv["BLUE_MYSQL_CONTAINER"]; v != "" {
+		c.BlueMySQLContainer = v
+	}
+	if v := kv["BLUE_MYSQL_DATABASE"]; v != "" {
+		c.BlueMySQLDatabase = v
+	}
+	c.BlueMySQLRootPassword = kv["BLUE_MYSQL_ROOT_PASSWORD"]
+	if c.BlueMySQLRootPassword == "" {
+		c.BlueMySQLRootPassword = kv["GREEN_MYSQL_ROOT_PASSWORD"]
+	}
 	if v := kv["MIGRATIONS_DIR"]; v != "" {
 		c.MigrationsDir = v
 	}

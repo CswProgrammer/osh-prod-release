@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,8 @@ func Open(sqlitePath string) (*Store, error) {
 	if _, err := db.Exec(string(schema)); err != nil {
 		return nil, err
 	}
+	// migrate existing DBs
+	_, _ = db.Exec(`ALTER TABLE releases ADD COLUMN deploy_target TEXT NOT NULL DEFAULT 'green'`)
 	return &Store{db: db}, nil
 }
 
@@ -55,10 +58,18 @@ func (s *Store) CreateRelease(ctx context.Context, req models.CreateReleaseReque
 	}
 	defer tx.Rollback()
 
+	target := strings.ToLower(strings.TrimSpace(req.DeployTarget))
+	if target == "" {
+		target = "green"
+	}
+	if target != "green" && target != "blue" {
+		return nil, fmt.Errorf("deploy_target must be green or blue")
+	}
+
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO releases (id, title, level, repo, commit_sha, status, author, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, req.Title, req.Level, req.Repo, req.CommitSHA, models.StatusDraft, req.Author,
+		INSERT INTO releases (id, title, level, repo, commit_sha, status, author, deploy_target, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, req.Title, req.Level, req.Repo, req.CommitSHA, models.StatusDraft, req.Author, target,
 		now.Format(time.RFC3339), now.Format(time.RFC3339))
 	if err != nil {
 		return nil, err
@@ -125,7 +136,7 @@ func defaultReleaseSteps() []stepDef {
 func (s *Store) GetRelease(ctx context.Context, id string) (*models.Release, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id, title, level, repo, commit_sha, status, author,
-			boss_approved, boss_approved_by, boss_approved_at, active_slot, created_at, updated_at
+			boss_approved, boss_approved_by, boss_approved_at, active_slot, deploy_target, created_at, updated_at
 		FROM releases WHERE id = ?`, id)
 	r, err := scanRelease(row)
 	if err != nil {
@@ -147,7 +158,7 @@ func (s *Store) GetRelease(ctx context.Context, id string) (*models.Release, err
 func (s *Store) ListReleases(ctx context.Context) ([]models.Release, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, title, level, repo, commit_sha, status, author,
-			boss_approved, boss_approved_by, boss_approved_at, active_slot, created_at, updated_at
+			boss_approved, boss_approved_by, boss_approved_at, active_slot, deploy_target, created_at, updated_at
 		FROM releases ORDER BY created_at DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
@@ -167,10 +178,10 @@ func (s *Store) ListReleases(ctx context.Context) ([]models.Release, error) {
 func scanRelease(row interface{ Scan(...any) error }) (*models.Release, error) {
 	var r models.Release
 	var bossApproved int
-	var bossBy, bossAt, activeSlot sql.NullString
+	var bossBy, bossAt, activeSlot, deployTarget sql.NullString
 	var createdAt, updatedAt string
 	err := row.Scan(&r.ID, &r.Title, &r.Level, &r.Repo, &r.CommitSHA, &r.Status, &r.Author,
-		&bossApproved, &bossBy, &bossAt, &activeSlot, &createdAt, &updatedAt)
+		&bossApproved, &bossBy, &bossAt, &activeSlot, &deployTarget, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +195,11 @@ func scanRelease(row interface{ Scan(...any) error }) (*models.Release, error) {
 	}
 	if activeSlot.Valid {
 		r.ActiveSlot = activeSlot.String
+	}
+	if deployTarget.Valid && deployTarget.String != "" {
+		r.DeployTarget = deployTarget.String
+	} else {
+		r.DeployTarget = "green"
 	}
 	r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	r.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
@@ -381,6 +397,30 @@ func (s *Store) AddSwitchEvent(ctx context.Context, e models.SwitchEvent) error 
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		e.ID, e.ReleaseID, e.FromSlot, e.ToSlot, e.Reason, e.Actor, e.CreatedAt.Format(time.RFC3339))
 	return err
+}
+
+func (s *Store) ListSwitchEvents(ctx context.Context, limit int) ([]models.SwitchEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, release_id, from_slot, to_slot, reason, actor, created_at
+		FROM switch_events ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.SwitchEvent
+	for rows.Next() {
+		var e models.SwitchEvent
+		var created string
+		if err := rows.Scan(&e.ID, &e.ReleaseID, &e.FromSlot, &e.ToSlot, &e.Reason, &e.Actor, &created); err != nil {
+			return nil, err
+		}
+		e.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) AddAudit(ctx context.Context, actor, action, target, detail string) error {

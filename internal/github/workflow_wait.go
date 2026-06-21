@@ -29,8 +29,17 @@ type workflowRunsResponse struct {
 	} `json:"workflow_runs"`
 }
 
-// WaitGreenWorkflows blocks until backend + frontend deploy-149.yml runs (dispatched after since) succeed.
+// WaitGreenWorkflows blocks until backend + frontend deploy-149.yml runs succeed.
 func (d *DeployTrigger) WaitGreenWorkflows(ctx context.Context, since time.Time, maxWait time.Duration) (string, error) {
+	return d.WaitSlotWorkflows(ctx, since, maxWait)
+}
+
+// WaitSlotWorkflows waits for latest workflow_dispatch runs after since (any slot).
+func (d *DeployTrigger) WaitSlotWorkflows(ctx context.Context, since time.Time, maxWait time.Duration) (string, error) {
+	return d.waitRepoWorkflows(ctx, since, maxWait)
+}
+
+func (d *DeployTrigger) waitRepoWorkflows(ctx context.Context, since time.Time, maxWait time.Duration) (string, error) {
 	backend, err := d.backendTarget("")
 	if err != nil {
 		return "", err
@@ -39,10 +48,10 @@ func (d *DeployTrigger) WaitGreenWorkflows(ctx context.Context, since time.Time,
 	if err != nil {
 		return "", err
 	}
-	return d.waitRepoWorkflows(ctx, []repoTarget{backend, frontend}, since, maxWait)
+	return d.waitRepoWorkflowsForTargets(ctx, []repoTarget{backend, frontend}, since, maxWait)
 }
 
-func (d *DeployTrigger) waitRepoWorkflows(ctx context.Context, targets []repoTarget, since time.Time, maxWait time.Duration) (string, error) {
+func (d *DeployTrigger) waitRepoWorkflowsForTargets(ctx context.Context, targets []repoTarget, since time.Time, maxWait time.Duration) (string, error) {
 	if d.cfg.GitHubToken == "" {
 		return "", fmt.Errorf("GITHUB_TOKEN not configured")
 	}

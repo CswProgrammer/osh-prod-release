@@ -60,7 +60,8 @@ type Release struct {
 	BossApproved bool         `json:"boss_approved"`
 	BossApprovedBy string     `json:"boss_approved_by,omitempty"`
 	BossApprovedAt *time.Time `json:"boss_approved_at,omitempty"`
-	ActiveSlot  string        `json:"active_slot,omitempty"` // blue|green after switch
+	ActiveSlot   string        `json:"active_slot,omitempty"` // blue|green after switch
+	DeployTarget string        `json:"deploy_target,omitempty"` // green|blue
 	CreatedAt   time.Time     `json:"created_at"`
 	UpdatedAt   time.Time     `json:"updated_at"`
 	Items       []ChangeItem  `json:"items,omitempty"`
@@ -142,7 +143,8 @@ type CreateReleaseRequest struct {
 	Level     ReleaseLevel             `json:"level"`
 	Repo      string                   `json:"repo"`
 	CommitSHA string                   `json:"commit_sha"`
-	Author    string                   `json:"author"`
+	Author       string                   `json:"author"`
+	DeployTarget string                   `json:"deploy_target,omitempty"` // green|blue, default green
 	Items     []CreateChangeItemRequest `json:"items"`
 }
 

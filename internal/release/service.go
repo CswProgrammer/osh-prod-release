@@ -14,6 +14,7 @@ import (
 	"github.com/juege/osh-prod-release/internal/ssh"
 	"github.com/juege/osh-prod-release/internal/store"
 	"github.com/juege/osh-prod-release/internal/testrunner"
+	"github.com/juege/osh-prod-release/internal/traffic"
 )
 
 type Service struct {
@@ -24,10 +25,11 @@ type Service struct {
 	test     *testrunner.Runner
 	artifact *github.ArtifactService
 	deployGH *github.DeployTrigger
+	traffic  *traffic.Service
 	mu       sync.Mutex
 }
 
-func New(cfg *config.Config, st *store.Store) *Service {
+func New(cfg *config.Config, st *store.Store, trafficSvc *traffic.Service) *Service {
 	return &Service{
 		cfg:      cfg,
 		store:    st,
@@ -36,8 +38,11 @@ func New(cfg *config.Config, st *store.Store) *Service {
 		test:     testrunner.New(cfg),
 		artifact: github.New(cfg),
 		deployGH: github.NewDeployTrigger(cfg),
+		traffic:  trafficSvc,
 	}
 }
+
+func (s *Service) Store() *store.Store { return s.store }
 
 func (s *Service) Create(ctx context.Context, req models.CreateReleaseRequest) (*models.Release, error) {
 	if req.Title == "" || req.CommitSHA == "" || req.Author == "" {
@@ -167,8 +172,26 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 		return nil, fmt.Errorf(msg)
 	}
 
+	target := rel.DeployTarget
+	if target == "" {
+		target = "green"
+	}
+	if target == "blue" {
+		if s.traffic == nil {
+			return nil, fmt.Errorf("traffic service not configured")
+		}
+		if err := s.traffic.RequireProductionGreen(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	deployMsg := "审批已通过，准备部署到绿环境"
+	if target == "blue" {
+		deployMsg = "审批已通过，准备部署到蓝环境"
+	}
+
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDeploying)
-	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "审批已通过，准备部署到绿环境")
+	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", deployMsg)
 
 	go s.executeDeploy(id, actor)
 	return s.store.GetRelease(ctx, id)
@@ -177,6 +200,45 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 func (s *Service) executeDeploy(id, actor string) {
 	ctx := context.Background()
 
+	rel, err := s.store.GetRelease(ctx, id)
+	if err != nil {
+		return
+	}
+	target := rel.DeployTarget
+	if target == "" {
+		target = "green"
+	}
+	if target == "blue" && s.traffic != nil {
+		if err := s.traffic.RequireProductionGreen(ctx); err != nil {
+			_ = s.store.UpdateStep(ctx, id, "deploy_standby", "failed", err.Error())
+			_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusFailed)
+			return
+		}
+	}
+
+	var out string
+	var errDeploy error
+	if target == "blue" {
+		out, errDeploy = s.executeBlueDeploy(ctx, id)
+	} else {
+		out, errDeploy = s.executeGreenDeploy(ctx, id)
+	}
+	if errDeploy != nil {
+		_ = s.store.UpdateStep(ctx, id, "deploy_standby", "failed", errDeploy.Error())
+		_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusFailed)
+		return
+	}
+	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "success", out)
+	_ = s.store.AddAudit(ctx, actor, "deploy_standby", id, out)
+
+	env := "green"
+	if target == "blue" {
+		env = "blue"
+	}
+	_, _ = s.runAutoTest(ctx, id, actor, env, target)
+}
+
+func (s *Service) executeGreenDeploy(ctx context.Context, id string) (string, error) {
 	var out string
 	var errDeploy error
 	if s.cfg.GitHubToken != "" && (s.cfg.GitHubBackendRepo != "" || s.cfg.GitHubFrontendRepo != "") {
@@ -201,18 +263,38 @@ func (s *Service) executeDeploy(id, actor string) {
 	} else {
 		out, errDeploy = s.ssh.DeployGreenCode(ctx)
 	}
-	if errDeploy != nil {
-		_ = s.store.UpdateStep(ctx, id, "deploy_standby", "failed", errDeploy.Error())
-		_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusFailed)
-		return
-	}
-	_ = s.store.UpdateStep(ctx, id, "deploy_standby", "success", out)
-	_ = s.store.AddAudit(ctx, actor, "deploy_standby", id, out)
-
-	_, _ = s.runAutoTest(ctx, id, actor)
+	return out, errDeploy
 }
 
-func (s *Service) runAutoTest(ctx context.Context, id, actor string) (*models.Release, error) {
+func (s *Service) executeBlueDeploy(ctx context.Context, id string) (string, error) {
+	var out string
+	var errDeploy error
+	if s.cfg.GitHubToken != "" && (s.cfg.GitHubBackendRepo != "" || s.cfg.GitHubFrontendRepo != "") {
+		dispatchSince := time.Now().UTC().Add(-15 * time.Second)
+		out, errDeploy = s.deployGH.TriggerSlot149(ctx, "", "", id, "blue")
+		if errDeploy == nil {
+			_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "GHA 已触发，等待前后端 workflow 跑完（约 3–8 分钟）…")
+			ghaOut, waitErr := s.deployGH.WaitSlotWorkflows(ctx, dispatchSince, 30*time.Minute)
+			if waitErr != nil {
+				errDeploy = waitErr
+			} else {
+				out = out + "; GHA: " + ghaOut
+				_ = s.store.UpdateStep(ctx, id, "deploy_standby", "running", "GHA 已完成，验证蓝环境 :58080…")
+				waitOut, waitErr := s.ssh.WaitSlotAPI(ctx, "blue", "58080", 5*time.Minute)
+				if waitErr != nil {
+					errDeploy = waitErr
+				} else {
+					out = out + "; " + waitOut
+				}
+			}
+		}
+	} else {
+		out, errDeploy = s.ssh.DeployBlueCode(ctx)
+	}
+	return out, errDeploy
+}
+
+func (s *Service) runAutoTest(ctx context.Context, id, actor, env, target string) (*models.Release, error) {
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusTesting)
 	_ = s.store.UpdateStep(ctx, id, "auto_test", "running", "")
 
@@ -220,7 +302,7 @@ func (s *Service) runAutoTest(ctx context.Context, id, actor string) (*models.Re
 	if err != nil {
 		return nil, err
 	}
-	report, err := s.test.Run(ctx, *rel, "green")
+	report, err := s.test.Run(ctx, *rel, env)
 	if err != nil {
 		_ = s.store.UpdateStep(ctx, id, "auto_test", "failed", err.Error())
 		_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusFailed)
@@ -234,6 +316,9 @@ func (s *Service) runAutoTest(ctx context.Context, id, actor string) (*models.Re
 	}
 	_ = s.store.UpdateStep(ctx, id, "auto_test", "success", report.AIVerdict)
 	_ = s.store.AddAudit(ctx, actor, "auto_test_pass", id, report.AIVerdict)
+	if target == "blue" {
+		return s.finishBlueDeploy(ctx, id, actor, report.AIVerdict)
+	}
 	return s.finishGreenDeploy(ctx, id, actor, report.AIVerdict)
 }
 
@@ -245,6 +330,17 @@ func (s *Service) finishGreenDeploy(ctx context.Context, id, actor, msg string) 
 	_ = s.store.UpdateStep(ctx, id, "finish", "success", "绿环境部署完成")
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDone)
 	_ = s.store.AddAudit(ctx, actor, "green_deploy_done", id, msg)
+	return s.store.GetRelease(ctx, id)
+}
+
+// finishBlueDeploy marks a blue standby deploy as done (no prod traffic switch).
+func (s *Service) finishBlueDeploy(ctx context.Context, id, actor, msg string) (*models.Release, error) {
+	_ = s.store.UpdateStep(ctx, id, "switch_traffic", "skipped", "蓝环境待命，不切生产流量")
+	_ = s.store.UpdateStep(ctx, id, "manual_verify", "skipped", "请验收 :58080")
+	_ = s.store.UpdateStep(ctx, id, "sync_standby", "skipped", "数据同步请使用「同步数据库」")
+	_ = s.store.UpdateStep(ctx, id, "finish", "success", "蓝环境部署完成")
+	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDone)
+	_ = s.store.AddAudit(ctx, actor, "blue_deploy_done", id, msg)
 	return s.store.GetRelease(ctx, id)
 }
 

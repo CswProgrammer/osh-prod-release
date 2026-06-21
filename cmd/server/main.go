@@ -11,7 +11,9 @@ import (
 	"github.com/juege/osh-prod-release/internal/api"
 	"github.com/juege/osh-prod-release/internal/config"
 	"github.com/juege/osh-prod-release/internal/release"
+	"github.com/juege/osh-prod-release/internal/ssh"
 	"github.com/juege/osh-prod-release/internal/store"
+	"github.com/juege/osh-prod-release/internal/traffic"
 )
 
 //go:embed all:static
@@ -39,7 +41,9 @@ func main() {
 	}
 	defer st.Close()
 
-	svc := release.New(cfg, st)
+	sshClient := ssh.New(cfg)
+	trafficSvc := traffic.New(st, sshClient)
+	svc := release.New(cfg, st, trafficSvc)
 	handler := api.New(cfg, svc)
 
 	mux := http.NewServeMux()
@@ -58,6 +62,9 @@ func main() {
 func spaHandler(fsys fs.FS) http.Handler {
 	fileServer := http.FileServer(http.FS(fsys))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Avoid stale embedded UI after go run restarts (browser caches /app.js aggressively).
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
 		if r.URL.Path != "/" && !fileExists(fsys, r.URL.Path) {
 			r2 := *r
 			r2.URL.Path = "/"

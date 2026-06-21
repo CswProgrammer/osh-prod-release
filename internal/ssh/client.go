@@ -48,7 +48,7 @@ func (c *Client) SwitchToGreen(ctx context.Context) (string, error) {
 
 func (c *Client) SwitchToBlue(ctx context.Context) (string, error) {
 	script := c.cfg.TrafficSwitchScript
-	return c.Run(ctx, fmt.Sprintf("bash %s to-blue", script), 3*time.Minute)
+	return c.Run(ctx, fmt.Sprintf("bash %s to-blue --resume-cron", script), 3*time.Minute)
 }
 
 func (c *Client) DeployGreenCode(ctx context.Context) (string, error) {
@@ -64,6 +64,14 @@ func (c *Client) DeployBlueCode(ctx context.Context) (string, error) {
 func (c *Client) TrafficStatus(ctx context.Context) (string, error) {
 	script := c.cfg.TrafficSwitchScript
 	return c.Run(ctx, fmt.Sprintf("bash %s status", script), 30*time.Second)
+}
+
+func (c *Client) SyncGreenToBlue(ctx context.Context) (string, error) {
+	script := c.cfg.StandbySyncScript
+	if script == "" {
+		script = "/opt/osh-green/005-scripts/osh-prod-standby-sync.sh"
+	}
+	return c.Run(ctx, fmt.Sprintf("bash %s --green-to-blue", script), 45*time.Minute)
 }
 
 // WaitGreenAPI polls green nginx /api/ until 200 or 401 (post GHA deploy).

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS releases (
     boss_approved_by TEXT,
     boss_approved_at TEXT,
     active_slot TEXT,
+    deploy_target TEXT NOT NULL DEFAULT 'green',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

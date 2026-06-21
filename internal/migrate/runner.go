@@ -99,7 +99,16 @@ func (r *Runner) Execute(ctx context.Context, id, actor string) (*ExecuteResult,
 }
 
 func (r *Runner) ExecuteRaw(ctx context.Context, label, sqlText, actor string) (*ExecuteResult, error) {
-	if err := r.guardGreenOnly(); err != nil {
+	return r.executeRawOn(ctx, "green", label, sqlText, actor)
+}
+
+func (r *Runner) ExecuteRawBlue(ctx context.Context, label, sqlText, actor string) (*ExecuteResult, error) {
+	return r.executeRawOn(ctx, "blue", label, sqlText, actor)
+}
+
+func (r *Runner) executeRawOn(ctx context.Context, slot, label, sqlText, actor string) (*ExecuteResult, error) {
+	container, database, password, err := r.mysqlTarget(slot)
+	if err != nil {
 		return nil, err
 	}
 	sqlText = strings.TrimSpace(sqlText)
@@ -113,11 +122,11 @@ func (r *Runner) ExecuteRaw(ctx context.Context, label, sqlText, actor string) (
 		label = "custom"
 	}
 
-	target := fmt.Sprintf("%s/%s", r.cfg.GreenMySQLContainer, r.cfg.GreenMySQLDatabase)
+	target := fmt.Sprintf("%s/%s", container, database)
 	if r.cfg.MockMode {
 		return &ExecuteResult{
 			ID: label, Target: target, Success: true,
-			Output: fmt.Sprintf("[MOCK] would execute SQL (%d bytes) as %s on green MySQL", len(sqlText), actor),
+			Output: fmt.Sprintf("[MOCK] would execute SQL (%d bytes) as %s on %s MySQL", len(sqlText), actor, slot),
 		}, nil
 	}
 
@@ -130,7 +139,7 @@ echo '%s' | base64 -d > "$tmp"
 docker exec -i %s mysql -uroot -p'%s' %s < "$tmp"
 rm -f "$tmp"
 echo "__OSH_SQL_OK__"`,
-		safeLabel, b64, r.cfg.GreenMySQLContainer, shellQuote(r.cfg.GreenMySQLRootPassword), r.cfg.GreenMySQLDatabase,
+		safeLabel, b64, container, shellQuote(password), database,
 	)
 
 	out, err := r.ssh.Run(ctx, remote, 3*time.Minute)
@@ -147,6 +156,40 @@ echo "__OSH_SQL_OK__"`,
 		return res, fmt.Errorf("SQL execution did not complete")
 	}
 	return res, nil
+}
+
+func (r *Runner) mysqlTarget(slot string) (container, database, password string, err error) {
+	switch slot {
+	case "green":
+		if err := r.guardGreenOnly(); err != nil {
+			return "", "", "", err
+		}
+		return r.cfg.GreenMySQLContainer, r.cfg.GreenMySQLDatabase, r.cfg.GreenMySQLRootPassword, nil
+	case "blue":
+		if err := r.guardBlueOnly(); err != nil {
+			return "", "", "", err
+		}
+		return r.cfg.BlueMySQLContainer, r.cfg.BlueMySQLDatabase, r.cfg.BlueMySQLRootPassword, nil
+	default:
+		return "", "", "", fmt.Errorf("unknown mysql slot: %s", slot)
+	}
+}
+
+func (r *Runner) guardBlueOnly() error {
+	c := strings.TrimSpace(r.cfg.BlueMySQLContainer)
+	if c == "" {
+		return fmt.Errorf("BLUE_MYSQL_CONTAINER not configured")
+	}
+	if c != "osh-mysql" {
+		return fmt.Errorf("refusing: blue mysql container must be osh-mysql, got %q", c)
+	}
+	if strings.Contains(c, "osh-g-") {
+		return fmt.Errorf("refusing: green mysql container is not allowed for blue SQL")
+	}
+	if r.cfg.BlueMySQLRootPassword == "" {
+		return fmt.Errorf("BLUE_MYSQL_ROOT_PASSWORD not configured")
+	}
+	return nil
 }
 
 func (r *Runner) guardGreenOnly() error {

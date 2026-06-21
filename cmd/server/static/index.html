@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>OSH 绿环境控制台</title>
+  <title>OSH 发布控制台</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/app.css" />
+  <link rel="stylesheet" href="/app.css?v=20260621-traffic-banner" />
 </head>
 <body>
   <div class="app-layout" id="appLayout">
@@ -15,24 +15,68 @@
       <div class="sidebar-brand">
         <div class="logo">G</div>
         <div class="sidebar-brand-text">
-          <strong>OSH 绿环境</strong>
-          <span>149 预发控制台</span>
+          <strong>OSH 发布控制台</strong>
+          <span>149 蓝绿环境</span>
         </div>
       </div>
 
       <nav class="sidebar-nav" id="sidebarNav">
-        <button type="button" class="nav-item active" data-page="deploy" title="部署绿环境">
+        <div class="nav-group open" data-group="green">
+          <button type="button" class="nav-group-head" data-toggle-group="green" aria-expanded="true">
+            <span class="nav-group-dot green" aria-hidden="true"></span>
+            <span class="nav-label">绿环境</span>
+            <span class="nav-group-chevron" aria-hidden="true">›</span>
+          </button>
+          <div class="nav-group-body">
+            <button type="button" class="nav-item" data-page="deploy" title="部署绿环境前后端">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+              </span>
+              <span class="nav-label">部署前后端</span>
+            </button>
+            <button type="button" class="nav-item" data-page="sql" title="更新绿环境数据库">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              </span>
+              <span class="nav-label">更新数据库</span>
+            </button>
+          </div>
+        </div>
+
+        <button type="button" class="nav-item nav-item-standalone" data-page="traffic" title="生产切流">
           <span class="nav-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4m0 0L3 8m4-4l4 4"/><path d="M17 8v12m0 0l4-4m-4 4l-4-4"/></svg>
           </span>
-          <span class="nav-label">部署绿环境</span>
+          <span class="nav-label">生产切流</span>
         </button>
-        <button type="button" class="nav-item" data-page="sql" title="更新绿环境数据库">
-          <span class="nav-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-          </span>
-          <span class="nav-label">更新绿环境数据库</span>
-        </button>
+
+        <div class="nav-group" data-group="blue">
+          <button type="button" class="nav-group-head" data-toggle-group="blue" aria-expanded="false">
+            <span class="nav-group-dot blue" aria-hidden="true"></span>
+            <span class="nav-label">蓝环境</span>
+            <span class="nav-group-chevron" aria-hidden="true">›</span>
+          </button>
+          <div class="nav-group-body" hidden>
+            <button type="button" class="nav-item" data-page="deploy-blue" title="部署蓝环境前后端">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+              </span>
+              <span class="nav-label">部署前后端</span>
+            </button>
+            <button type="button" class="nav-item" data-page="sql-blue" title="自定义 SQL 更新蓝库">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              </span>
+              <span class="nav-label">更新数据库</span>
+            </button>
+            <button type="button" class="nav-item" data-page="sync-blue" title="从绿全量同步数据到蓝库">
+              <span class="nav-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+              </span>
+              <span class="nav-label">同步数据库</span>
+            </button>
+          </div>
+        </div>
       </nav>
 
       <div class="sidebar-foot">
@@ -127,7 +171,7 @@
           </div>
         </section>
 
-        <!-- 数据库页 -->
+        <!-- 绿环境：更新数据库 -->
         <section class="page page-sql" id="pageSql" data-page="sql" hidden>
           <div class="page-intro card">
             <p class="action-desc">
@@ -155,6 +199,208 @@
             <pre class="sql-result" id="sqlResult" hidden></pre>
           </div>
         </section>
+
+        <!-- 生产切流页 -->
+        <section class="page page-traffic" id="pageTraffic" data-page="traffic" hidden>
+          <div class="page-intro card">
+            <p class="action-desc">
+              切换 149 生产入口 <code>:80</code> 指向蓝环境或绿环境。<strong>部署进行中时不可切流。</strong>
+            </p>
+          </div>
+
+          <div class="traffic-lock-banner" id="trafficLockBanner" hidden>
+            <span class="lock-icon">⏳</span>
+            <span id="trafficLockText">—</span>
+          </div>
+
+          <div class="traffic-grid">
+            <div class="traffic-status-card card">
+              <div class="traffic-status-head">
+                <span class="traffic-status-label">当前生产流量</span>
+                <span class="traffic-pill" id="trafficActivePill">—</span>
+              </div>
+              <p class="traffic-status-desc" id="trafficStatusDesc">正在读取…</p>
+              <details class="fold traffic-raw-fold">
+                <summary>查看脚本原始输出</summary>
+                <pre class="traffic-raw" id="trafficRaw">—</pre>
+              </details>
+            </div>
+
+            <div class="traffic-actions card">
+              <h2 class="action-title">切换操作</h2>
+              <p class="action-desc">切到绿环境前请确认绿环境已部署并通过验收；回切蓝环境会恢复 cron 同步。</p>
+
+              <label for="trafficReason">备注（可选）</label>
+              <input id="trafficReason" placeholder="例：绿环境验收通过，正式上线" />
+
+              <div class="traffic-btns">
+                <button type="button" class="btn-mega btn-traffic-green" id="btnToGreen">
+                  <span>切到绿环境 →</span>
+                  <span class="btn-arrow">→</span>
+                </button>
+                <button type="button" class="btn-mega btn-traffic-blue" id="btnToBlue">
+                  <span>切回蓝环境 ←</span>
+                  <span class="btn-arrow">←</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <details class="fold card traffic-history-fold" open>
+            <summary>切流历史</summary>
+            <div class="traffic-history" id="trafficHistory"><div class="empty">加载中…</div></div>
+          </details>
+        </section>
+
+        <!-- 蓝环境：部署前后端（4 步向导，与绿环境一致） -->
+        <section class="page page-deploy-blue" id="pageDeployBlue" data-page="deploy-blue" hidden>
+          <nav class="stepper" id="blueStepper" aria-label="蓝环境部署步骤">
+            <div class="stepper-item" data-step="1"><span class="step-num">1</span><span class="step-text">创建</span></div>
+            <div class="stepper-arrow">→</div>
+            <div class="stepper-item" data-step="2"><span class="step-num">2</span><span class="step-text">评审</span></div>
+            <div class="stepper-arrow">→</div>
+            <div class="stepper-item" data-step="3"><span class="step-num">3</span><span class="step-text">审批</span></div>
+            <div class="stepper-arrow">→</div>
+            <div class="stepper-item" data-step="4"><span class="step-num">4</span><span class="step-text">部署</span></div>
+          </nav>
+
+          <div class="deploy-lock-banner warn" id="blueDeployGuardBanner" hidden>
+            <span class="lock-icon">⚠️</span>
+            <span id="blueDeployGuardText">—</span>
+          </div>
+
+          <div class="deploy-lock-banner" id="blueDeployLockBanner" hidden>
+            <span class="lock-icon">⏳</span>
+            <span id="blueDeployLockText">—</span>
+          </div>
+
+          <div class="content-grid">
+            <div class="content-primary">
+              <div class="action-card card">
+                <div class="step-badge" id="blueStepBadge">第 1 步</div>
+                <h2 class="action-title" id="blueActionTitle">填写发布信息</h2>
+                <p class="action-desc" id="blueActionDesc">输入本次蓝环境部署名称和你的名字。</p>
+                <p class="sql-tip" id="blueDeployTip">—</p>
+
+                <div class="action-form" id="blueActionForm">
+                  <label for="blueTitle">发布名称（必填）</label>
+                  <input id="blueTitle" placeholder="例：20260708 同步蓝代码" />
+                  <label for="blueAuthor">你的名字（必填）</label>
+                  <input id="blueAuthor" value="ops" placeholder="例：张三" />
+                </div>
+
+                <button type="button" class="btn-mega btn-blue-deploy" id="blueMainBtn">
+                  <span id="blueMainBtnText">下一步：创建发布单</span>
+                  <span class="btn-arrow">→</span>
+                </button>
+
+                <div class="success-box" id="blueSuccessBox" hidden>
+                  <div class="success-icon">✓</div>
+                  <h3>蓝环境部署完成！</h3>
+                  <p>代码已更新，请验收 :58080。</p>
+                  <a class="btn btn-secondary" id="blueAcceptLink" href="#" target="_blank" rel="noopener">打开蓝环境验收 →</a>
+                </div>
+
+                <button type="button" class="btn btn-reset" id="btnNewBlueDeploy" hidden>再部署一遍 →</button>
+
+                <div class="waiting-box" id="blueWaitingBox" hidden>
+                  <div class="spinner-inline"></div>
+                  <p id="blueWaitingText">正在部署，请稍候…</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="content-secondary">
+              <details class="fold card" id="blueLogFold">
+                <summary>查看部署日志</summary>
+                <ul class="steps" id="blueSteps"></ul>
+              </details>
+
+              <details class="fold card">
+                <summary>历史发布单（蓝环境）</summary>
+                <div class="release-list" id="blueList"><div class="empty">加载中…</div></div>
+              </details>
+            </div>
+          </div>
+        </section>
+
+        <!-- 蓝环境：更新数据库（自定义 SQL） -->
+        <section class="page page-sql-blue" id="pageSqlBlue" data-page="sql-blue" hidden>
+          <div class="page-intro card env-intro env-intro-blue">
+            <p class="action-desc">
+              粘贴或编写 SQL，执行到蓝库待命库 <strong>osh-mysql / backstage</strong>。
+              增量更新，<strong>不是</strong>全量同步；与「同步数据库」不同。
+            </p>
+            <p class="sql-tip" id="blueSqlTip">—</p>
+          </div>
+
+          <div class="deploy-lock-banner warn" id="blueSqlGuardBanner" hidden>
+            <span class="lock-icon">⚠️</span>
+            <span id="blueSqlGuardText">—</span>
+          </div>
+
+          <div class="deploy-lock-banner" id="blueSqlLockBanner" hidden>
+            <span class="lock-icon">⏳</span>
+            <span id="blueSqlLockText">—</span>
+          </div>
+
+          <div class="sql-card card">
+            <label for="blueSqlLabel">备注（可选）</label>
+            <input id="blueSqlLabel" placeholder="例：blue 库补字段" />
+
+            <label for="blueCustomSql">SQL 语句</label>
+            <textarea id="blueCustomSql" class="sql-editor" rows="16" placeholder="粘贴 CREATE TABLE / ALTER TABLE 等 SQL…"></textarea>
+
+            <div class="sql-toolbar">
+              <select id="blueSqlTemplate" class="sql-select">
+                <option value="">从模板填入（可选）</option>
+              </select>
+              <button type="button" class="btn btn-ghost" id="btnBlueLoadTemplate">填入模板</button>
+            </div>
+
+            <button type="button" class="btn-mega btn-blue-sql-exec" id="btnExecBlueSql">执行 SQL 到蓝库 →</button>
+            <p class="env-hint" id="blueSqlHint">仅当生产流量在绿环境（蓝为待命）时可操作。</p>
+
+            <pre class="sql-result" id="blueSqlResult" hidden></pre>
+          </div>
+        </section>
+
+        <!-- 蓝环境：全量同步数据库 -->
+        <section class="page page-sync-blue" id="pageSyncBlue" data-page="sync-blue" hidden>
+          <div class="page-intro card env-intro env-intro-blue">
+            <p class="action-desc">
+              从<strong>绿环境（当前生产）</strong>只读同步 MySQL、Nacos、ES、Redis 到蓝环境待命库。
+              脚本：<code>osh-prod-standby-sync.sh --green-to-blue</code>
+            </p>
+            <p class="sql-tip" id="blueSyncTip">—</p>
+          </div>
+
+          <div class="deploy-lock-banner warn" id="blueSyncGuardBanner" hidden>
+            <span class="lock-icon">⚠️</span>
+            <span id="blueSyncGuardText">—</span>
+          </div>
+
+          <div class="deploy-lock-banner" id="blueSyncLockBanner" hidden>
+            <span class="lock-icon">⏳</span>
+            <span id="blueSyncLockText">—</span>
+          </div>
+
+          <div class="blue-sync-card card">
+            <h2 class="action-title">全量同步数据库（绿 → 蓝）</h2>
+            <p class="action-desc">从绿环境只读复制 MySQL、Nacos、ES、Redis 到蓝待命库。耗时约 5–20 分钟，会覆盖蓝库中间件数据。</p>
+
+            <label for="blueSyncReason">备注（可选）</label>
+            <input id="blueSyncReason" placeholder="例：20260708 上线后同步蓝库" />
+
+            <button type="button" class="btn-mega btn-blue-sync" id="btnSyncBlue">
+              <span>开始绿 → 蓝 数据同步 →</span>
+              <span class="btn-arrow">→</span>
+            </button>
+            <p class="env-hint" id="blueSyncHint">仅当生产流量在绿环境时可操作。</p>
+
+            <pre class="sql-result" id="blueSyncResult" hidden></pre>
+          </div>
+        </section>
       </main>
 
       <footer class="env-footer">
@@ -173,6 +419,6 @@
   <input type="hidden" id="rev2" value="rev-c" />
   <input type="hidden" id="impact" value="前后端代码更新，仅部署绿环境" />
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260621-blue-sql"></script>
 </body>
 </html>
