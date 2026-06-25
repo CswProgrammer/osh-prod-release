@@ -16,6 +16,9 @@ type Config struct {
 	ProdSSHPort           int
 	ProdSSHUser           string
 	ProdSSHPassword       string
+	// ProdExecMode: auto | local | ssh
+	// auto — local when script exists on this machine or PROD_HOST is local; else sshpass SSH
+	ProdExecMode          string
 	TrafficSwitchScript   string
 	GreenCodeSyncScript   string
 	BlueCodeSyncScript    string
@@ -31,6 +34,10 @@ type Config struct {
 	GitHubToken                string
 	AnalyzerURL           string
 	BossReviewer          string
+	SuperAdminUser        string
+	SuperAdminPassword    string
+	AuthPepper            string
+	AuthUsers             []AuthUserEntry
 	APIToken              string
 	GreenMySQLContainer    string
 	GreenMySQLDatabase     string
@@ -39,6 +46,12 @@ type Config struct {
 	BlueMySQLDatabase      string
 	BlueMySQLRootPassword  string
 	MigrationsDir          string
+}
+
+type AuthUserEntry struct {
+	Username    string
+	Password    string
+	DisplayName string
 }
 
 func Load(path string) (*Config, error) {
@@ -50,12 +63,14 @@ func Load(path string) (*Config, error) {
 		ProdSSHHost:         "149.88.92.159",
 		ProdSSHPort:         16328,
 		ProdSSHUser:         "root",
+		ProdExecMode:        "auto",
 		TrafficSwitchScript: "/opt/osh-green/005-scripts/osh-traffic-switch.sh",
 		GreenCodeSyncScript: "/opt/osh-deploy-tools/osh-green-code-sync.sh",
 		BlueCodeSyncScript:  "/opt/osh-deploy-tools/osh-prod-code-sync.sh",
 		StandbySyncScript:   "/opt/osh-green/005-scripts/osh-prod-standby-sync.sh",
 		AnalyzerURL:         "http://127.0.0.1:8766",
-		BossReviewer:        "觉哥",
+		BossReviewer:        "juege",
+		SuperAdminUser:      "juege",
 		GreenMySQLContainer: "osh-g-mysql",
 		GreenMySQLDatabase:  "backstage",
 		BlueMySQLContainer:  "osh-mysql",
@@ -128,6 +143,9 @@ func Load(path string) (*Config, error) {
 	} else if v := kv["PROD_PASSWORD"]; v != "" && v != "CHANGE_ME" {
 		c.ProdSSHPassword = v
 	}
+	if v := kv["PROD_EXEC_MODE"]; v != "" {
+		c.ProdExecMode = v
+	}
 	if v := kv["TRAFFIC_SWITCH_SCRIPT"]; v != "" {
 		c.TrafficSwitchScript = v
 	}
@@ -157,6 +175,20 @@ func Load(path string) (*Config, error) {
 	if v := kv["BOSS_REVIEWER"]; v != "" {
 		c.BossReviewer = v
 	}
+	if v := kv["SUPER_ADMIN_USER"]; v != "" {
+		c.SuperAdminUser = v
+	}
+	if v := kv["JUEGE_PASSWORD"]; v != "" {
+		c.SuperAdminPassword = v
+	} else if v := kv["SUPER_ADMIN_PASSWORD"]; v != "" {
+		c.SuperAdminPassword = v
+	}
+	if v := kv["AUTH_PEPPER"]; v != "" {
+		c.AuthPepper = v
+	}
+	if v := kv["AUTH_USERS"]; v != "" {
+		c.AuthUsers = parseAuthUsers(v)
+	}
 	c.APIToken = kv["API_TOKEN"]
 	if v := kv["GREEN_MYSQL_CONTAINER"]; v != "" {
 		c.GreenMySQLContainer = v
@@ -179,4 +211,26 @@ func Load(path string) (*Config, error) {
 		c.MigrationsDir = v
 	}
 	return c, sc.Err()
+}
+
+func parseAuthUsers(raw string) []AuthUserEntry {
+	var out []AuthUserEntry
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		fields := strings.Split(part, ":")
+		if len(fields) < 2 {
+			continue
+		}
+		entry := AuthUserEntry{Username: fields[0], Password: fields[1]}
+		if len(fields) >= 3 {
+			entry.DisplayName = fields[2]
+		} else {
+			entry.DisplayName = fields[0]
+		}
+		out = append(out, entry)
+	}
+	return out
 }

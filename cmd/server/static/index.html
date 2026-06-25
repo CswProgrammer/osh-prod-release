@@ -7,10 +7,29 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/app.css?v=20260621-traffic-banner" />
+  <link rel="stylesheet" href="/app.css?v=20260621-loginfix" />
 </head>
 <body>
-  <div class="app-layout" id="appLayout">
+  <div class="login-screen" id="loginScreen">
+    <div class="login-card card">
+      <div class="login-brand">
+        <div class="logo">G</div>
+        <div>
+          <h2>OSH 发布控制台</h2>
+          <p>149 蓝绿环境 · 请登录后继续</p>
+        </div>
+      </div>
+      <label for="loginUser">用户名</label>
+      <input id="loginUser" placeholder="例：juege" autocomplete="username" />
+      <label for="loginPass">密码</label>
+      <input id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password" />
+      <button type="button" class="btn-mega btn-login" id="btnLogin">登录 →</button>
+      <p class="login-hint" id="loginHint">管理员 juege 可直通发布；其他用户需双评审 + 终审。</p>
+      <p class="login-error" id="loginError" hidden></p>
+    </div>
+  </div>
+
+  <div class="app-layout" id="appLayout" hidden>
     <aside class="sidebar" id="sidebar" aria-label="功能导航">
       <div class="sidebar-brand">
         <div class="logo">G</div>
@@ -99,6 +118,8 @@
           </div>
         </div>
         <div class="badges">
+          <span class="badge user-badge" id="userBadge" hidden>—</span>
+          <button type="button" class="badge badge-logout" id="btnLogout" hidden>退出</button>
           <span class="badge" id="modeBadge">—</span>
           <span class="badge" id="ghaBadge">—</span>
         </div>
@@ -166,6 +187,15 @@
               <details class="fold card">
                 <summary>历史发布单</summary>
                 <div class="release-list" id="list"><div class="empty">加载中…</div></div>
+              </details>
+
+              <details class="fold card" id="rollbackFold">
+                <summary>版本回滚</summary>
+                <div class="rollback-panel">
+                  <p class="action-desc">将绿环境回退到上一次成功部署的版本（仅管理员）。</p>
+                  <div class="rollback-list" id="rollbackList"><div class="empty">加载中…</div></div>
+                  <button type="button" class="btn btn-ghost btn-rollback" id="btnRollbackGreen" hidden>回滚到上一版本 →</button>
+                </div>
               </details>
             </div>
           </div>
@@ -320,6 +350,15 @@
                 <summary>历史发布单（蓝环境）</summary>
                 <div class="release-list" id="blueList"><div class="empty">加载中…</div></div>
               </details>
+
+              <details class="fold card" id="blueRollbackFold">
+                <summary>版本回滚（蓝环境）</summary>
+                <div class="rollback-panel">
+                  <p class="sql-tip">仅管理员可用。将蓝环境回退到上一成功部署的 git ref。</p>
+                  <div class="rollback-list" id="blueRollbackList"><div class="empty">加载中…</div></div>
+                  <button type="button" class="btn btn-ghost btn-rollback" id="btnRollbackBlue" hidden>回滚到上一版本 →</button>
+                </div>
+              </details>
             </div>
           </div>
         </section>
@@ -419,6 +458,6 @@
   <input type="hidden" id="rev2" value="rev-c" />
   <input type="hidden" id="impact" value="前后端代码更新，仅部署绿环境" />
 
-  <script src="/app.js?v=20260621-blue-sql"></script>
+  <script src="/app.js?v=20260621-loginfix"></script>
 </body>
 </html>

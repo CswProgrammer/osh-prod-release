@@ -19,14 +19,24 @@ func New(cfg *config.Config) *Client {
 }
 
 func (c *Client) Run(ctx context.Context, remoteCmd string, timeout time.Duration) (string, error) {
-	if c.cfg.MockMode || c.cfg.ProdSSHPassword == "" {
-		return fmt.Sprintf("[MOCK SSH] %s", remoteCmd), nil
+	if c.cfg.MockMode {
+		return fmt.Sprintf("[MOCK] %s", remoteCmd), nil
 	}
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	if useLocalExec(c.cfg) {
+		cmd := exec.CommandContext(ctx, "bash", "-lc", remoteCmd)
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	if c.cfg.ProdSSHPassword == "" {
+		return "", fmt.Errorf("PROD_PASSWORD required for remote SSH mode (set PROD_EXEC_MODE=local on prod host or configure password)")
+	}
 	args := []string{
 		"-p", c.cfg.ProdSSHPassword,
 		"ssh",

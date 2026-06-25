@@ -6,7 +6,177 @@
     health: null, current: null, currentBlue: null, pollTimer: null, blueDeployPollTimer: null,
     busy: false, page: 'deploy', activeDeploy: null, activePollTimer: null, traffic: null,
     trafficLoading: false, blueActive: null, bluePollTimer: null,
+    user: null, token: sessionStorage.getItem('osh_token') || '',
   };
+
+  function isAdmin() {
+    return !!state.user?.is_admin;
+  }
+
+  function isBoss() {
+    return !!state.user?.is_boss;
+  }
+
+  function authHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    if (state.token) h.Authorization = `Bearer ${state.token}`;
+    return h;
+  }
+
+  function showApp(loggedIn) {
+    const login = $('loginScreen');
+    const app = $('appLayout');
+    if (!login || !app) return;
+    if (loggedIn) {
+      login.hidden = true;
+      login.setAttribute('hidden', '');
+      app.hidden = false;
+      app.removeAttribute('hidden');
+    } else {
+      login.hidden = false;
+      login.removeAttribute('hidden');
+      app.hidden = true;
+      app.setAttribute('hidden', '');
+    }
+  }
+
+  function renderUserBadge() {
+    const badge = $('userBadge');
+    const logout = $('btnLogout');
+    if (!badge) return;
+    if (!state.user) {
+      badge.hidden = true;
+      if (logout) logout.hidden = true;
+      return;
+    }
+    badge.hidden = false;
+    badge.textContent = isAdmin() ? `${state.user.display_name || state.user.username} · 管理员` : (state.user.display_name || state.user.username);
+    badge.className = `badge user-badge${isAdmin() ? ' admin' : ''}`;
+    if (logout) logout.hidden = false;
+    const author = $('author');
+    const blueAuthor = $('blueAuthor');
+    if (author) {
+      author.value = state.user.username;
+      author.readOnly = true;
+    }
+    if (blueAuthor) {
+      blueAuthor.value = state.user.username;
+      blueAuthor.readOnly = true;
+    }
+  }
+
+  async function login() {
+    const username = $('loginUser').value.trim();
+    const password = $('loginPass').value;
+    const errEl = $('loginError');
+    errEl.hidden = true;
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || '登录失败');
+      state.token = data.token;
+      state.user = data.user;
+      sessionStorage.setItem('osh_token', state.token);
+      showApp(true);
+      renderUserBadge();
+      await bootApp();
+    } catch (err) {
+      errEl.hidden = false;
+      errEl.textContent = err.message || String(err);
+    }
+  }
+
+  async function logout() {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() });
+    } catch { /* ignore */ }
+    state.token = '';
+    state.user = null;
+    sessionStorage.removeItem('osh_token');
+    showApp(false);
+  }
+
+  async function restoreSession() {
+    if (!state.token) {
+      showApp(false);
+      return false;
+    }
+    try {
+      const res = await fetch('/api/auth/me', { headers: authHeaders() });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'session expired');
+      state.user = data;
+      showApp(true);
+      renderUserBadge();
+      return true;
+    } catch {
+      state.token = '';
+      sessionStorage.removeItem('osh_token');
+      showApp(false);
+      return false;
+    }
+  }
+
+  async function loadDeploySnapshotsFor(target, listId, btnId) {
+    const el = $(listId);
+    const btn = $(btnId);
+    if (!el) return;
+    if (!isAdmin()) {
+      el.innerHTML = '<div class="empty">仅管理员可查看回滚</div>';
+      if (btn) btn.hidden = true;
+      return;
+    }
+    try {
+      const list = await api(`/api/deploy/snapshots?target=${target}`);
+      if (!list.length) {
+        el.innerHTML = '<div class="empty">暂无部署快照</div>';
+        if (btn) btn.hidden = true;
+        return;
+      }
+      el.innerHTML = list.slice(0, 5).map((s, i) => `
+        <div class="rollback-item">
+          <strong>${i === 0 ? '当前' : '历史'} · ${escapeHtml(s.title)}</strong>
+          <span class="meta">${new Date(s.created_at).toLocaleString()} · ${escapeHtml(s.backend_git_ref)} / ${escapeHtml(s.frontend_git_ref)}</span>
+        </div>`).join('');
+      if (btn) btn.hidden = list.length < 2;
+    } catch {
+      el.innerHTML = '<div class="empty">加载失败</div>';
+      if (btn) btn.hidden = true;
+    }
+  }
+
+  async function loadDeploySnapshots() {
+    await loadDeploySnapshotsFor('green', 'rollbackList', 'btnRollbackGreen');
+    await loadDeploySnapshotsFor('blue', 'blueRollbackList', 'btnRollbackBlue');
+  }
+
+  async function rollbackDeploy(target) {
+    if (!isAdmin()) {
+      toast('仅管理员可执行版本回滚', 'error');
+      return;
+    }
+    const label = target === 'blue' ? '蓝环境' : '绿环境';
+    if (!confirm(`确认将${label}回滚到上一成功部署版本？\n\n将通过 GHA 重新部署上一版本的 git ref。`)) return;
+    state.busy = true;
+    $('loading').classList.add('show');
+    try {
+      const snap = await api('/api/deploy/rollback', {
+        method: 'POST',
+        body: JSON.stringify({ target, to_previous: true, actor: state.user.username, reason: 'manual rollback' }),
+      });
+      toast(`回滚完成：${snap.title || snap.id}`);
+      await loadDeploySnapshots();
+    } catch (err) {
+      toast(err.message || String(err), 'error');
+    } finally {
+      state.busy = false;
+      $('loading').classList.remove('show');
+    }
+  }
 
   const PAGE_GROUPS = {
     deploy: 'green',
@@ -476,7 +646,8 @@
     document.querySelectorAll('#blueStepper .stepper-item').forEach((el) => {
       const n = Number(el.dataset.step);
       el.classList.remove('active', 'done');
-      if (step === 0 || (step > 0 && n < step)) el.classList.add('done');
+      const adminSkip = isAdmin() && step === 4 && (n === 2 || n === 3);
+      if (step === 0 || (step > 0 && n < step) || adminSkip) el.classList.add('done');
       if (n === step) el.classList.add('active');
       if (step === -1 && n === 4) el.classList.add('active');
     });
@@ -485,7 +656,7 @@
   function renderBlueDeployUI() {
     const rel = state.currentBlue;
     const step = currentStep(rel);
-    const cfg = BLUE_STEPS[step] || BLUE_STEPS[4];
+    let cfg = BLUE_STEPS[step] || BLUE_STEPS[4];
     const inProgress = isDeployInProgress(rel);
     const prodBlocked = !isProductionGreen() && step === 4 && !inProgress && step !== 0;
 
@@ -551,6 +722,26 @@
         ? 'GitHub Actions 正在跑前后端 workflow…（约 3–8 分钟）'
         : '蓝环境已就绪，正在跑自动测试…';
       return;
+    }
+
+    if (step === 3 && rel && reviewsOK(rel.items?.[0]) && !rel.boss_approved) {
+      $('blueStepBadge').textContent = '第 3 步';
+      $('blueActionForm').style.display = 'none';
+      if (isBoss()) {
+        $('blueActionTitle').textContent = '终审发布';
+        $('blueActionDesc').textContent = '双评审已通过，请确认终审后进入部署。';
+        $('blueMainBtnText').textContent = '终审通过 →';
+        $('blueMainBtn').hidden = false;
+      } else {
+        $('blueActionTitle').textContent = '等待终审';
+        $('blueActionDesc').textContent = `双评审已通过，需 ${state.health?.deploy?.boss_reviewer || 'juege'} 登录终审后才能部署。`;
+        $('blueMainBtn').hidden = true;
+      }
+      return;
+    }
+
+    if (step === 1 && isAdmin()) {
+      cfg = { ...cfg, desc: '管理员账号可直接创建并部署，无需双评审与终审。' };
     }
 
     $('blueStepBadge').textContent = cfg.badge;
@@ -666,22 +857,36 @@
 
   async function completeBlueApproval() {
     const item = state.currentBlue.items[0];
-    for (const reviewer of [item.reviewer1, item.reviewer2]) {
-      await api(`/api/items/${item.id}/reviews`, {
-        method: 'POST',
-        body: JSON.stringify({
-          reviewer, tested: true,
-          demo_seen: reviewer !== item.developer,
-          result: 'approve', comment: '通过',
-        }),
-      });
+    if (!reviewsOK(item)) {
+      for (const reviewer of [item.reviewer1, item.reviewer2]) {
+        await api(`/api/items/${item.id}/reviews`, {
+          method: 'POST',
+          body: JSON.stringify({
+            reviewer, tested: true,
+            demo_seen: reviewer !== item.developer,
+            result: 'approve', comment: '通过',
+          }),
+        });
+      }
     }
-    const boss = state.health?.deploy?.boss_reviewer || '觉哥';
+    state.currentBlue = await api(`/api/releases/${state.currentBlue.id}`);
+    if (isBoss()) {
+      state.currentBlue = await api(`/api/releases/${state.currentBlue.id}/boss-approve`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewer: state.user.username, comment: '终审通过' }),
+      });
+      toast('终审通过，可以部署了');
+    } else {
+      toast('双评审已提交，等待 juege 终审');
+    }
+  }
+
+  async function bossApproveBlueOnly() {
     state.currentBlue = await api(`/api/releases/${state.currentBlue.id}/boss-approve`, {
       method: 'POST',
-      body: JSON.stringify({ reviewer: boss, comment: '终审通过' }),
+      body: JSON.stringify({ reviewer: state.user.username, comment: '终审通过' }),
     });
-    toast('第 3 步完成！可以部署了');
+    toast('终审通过，可以部署了');
   }
 
   async function deployBlueRelease() {
@@ -722,7 +927,10 @@
       const step = currentStep(state.currentBlue);
       if (step === 1) await createBlueRelease();
       else if (step === 2) await submitBlueReview();
-      else if (step === 3) await completeBlueApproval();
+      else if (step === 3) {
+        if (reviewsOK(state.currentBlue.items?.[0]) && isBoss()) await bossApproveBlueOnly();
+        else await completeBlueApproval();
+      }
       else if (step === 4) {
         $('loading').classList.remove('show');
         await deployBlueRelease();
@@ -908,7 +1116,10 @@
   }
 
   async function api(path, opts = {}) {
-    const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+    const res = await fetch(path, {
+      ...opts,
+      headers: { ...authHeaders(), ...(opts.headers || {}) },
+    });
     let data = {};
     try { data = await res.json(); } catch { /* empty */ }
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -966,16 +1177,19 @@
     }
 
     if (rel.boss_approved && reviewsOK(rel.items?.[0])) return 4;
-    if (rel.status === 'draft') return 2;
+    if (isAdmin() && rel.boss_approved && ['draft', 'approved'].includes(rel.status)) return 4;
+    if (reviewsOK(rel.items?.[0]) && !rel.boss_approved) return 3;
+    if (rel.status === 'draft') return isAdmin() && rel.boss_approved ? 4 : 2;
     if (rel.status === 'reviewing') return 3;
     return 2;
   }
 
   function renderStepper(step) {
-    document.querySelectorAll('.stepper-item').forEach((el) => {
+    document.querySelectorAll('#stepper .stepper-item, #pageDeploy .stepper-item').forEach((el) => {
       const n = Number(el.dataset.step);
       el.classList.remove('active', 'done');
-      if (step === 0 || (step > 0 && n < step)) el.classList.add('done');
+      const adminSkip = isAdmin() && step === 4 && (n === 2 || n === 3);
+      if (step === 0 || (step > 0 && n < step) || adminSkip) el.classList.add('done');
       if (n === step) el.classList.add('active');
       if (step === -1 && n === 4) el.classList.add('active');
     });
@@ -995,7 +1209,7 @@
   function renderUI() {
     const rel = state.current;
     const step = currentStep(rel);
-    const cfg = STEPS[step] || STEPS[4];
+    let cfg = STEPS[step] || STEPS[4];
     const inProgress = isDeployInProgress(rel);
 
     renderStepper(step === 0 ? 4 : step);
@@ -1052,6 +1266,26 @@
         ? 'GitHub Actions 正在跑前后端 workflow…（约 3–8 分钟，跑完才会显示成功）'
         : '绿环境已就绪，正在跑自动测试…';
       return;
+    }
+
+    if (step === 3 && rel && reviewsOK(rel.items?.[0]) && !rel.boss_approved) {
+      $('stepBadge').textContent = '第 3 步';
+      $('actionForm').style.display = 'none';
+      if (isBoss()) {
+        $('actionTitle').textContent = '终审发布';
+        $('actionDesc').textContent = '双评审已通过，请确认终审后进入部署。';
+        $('mainBtnText').textContent = '终审通过 →';
+        $('mainBtn').hidden = false;
+      } else {
+        $('actionTitle').textContent = '等待终审';
+        $('actionDesc').textContent = `双评审已通过，需 ${state.health?.deploy?.boss_reviewer || 'juege'} 登录终审后才能部署。`;
+        $('mainBtn').hidden = true;
+      }
+      return;
+    }
+
+    if (step === 1 && isAdmin()) {
+      cfg = { ...cfg, desc: '管理员账号可直接创建并部署，无需双评审与终审。' };
     }
 
     $('stepBadge').textContent = cfg.badge;
@@ -1450,22 +1684,36 @@
 
   async function completeApproval() {
     const item = state.current.items[0];
-    for (const reviewer of [item.reviewer1, item.reviewer2]) {
-      await api(`/api/items/${item.id}/reviews`, {
-        method: 'POST',
-        body: JSON.stringify({
-          reviewer, tested: true,
-          demo_seen: reviewer !== item.developer,
-          result: 'approve', comment: '通过',
-        }),
-      });
+    if (!reviewsOK(item)) {
+      for (const reviewer of [item.reviewer1, item.reviewer2]) {
+        await api(`/api/items/${item.id}/reviews`, {
+          method: 'POST',
+          body: JSON.stringify({
+            reviewer, tested: true,
+            demo_seen: reviewer !== item.developer,
+            result: 'approve', comment: '通过',
+          }),
+        });
+      }
     }
-    const boss = state.health?.deploy?.boss_reviewer || '觉哥';
+    state.current = await api(`/api/releases/${state.current.id}`);
+    if (isBoss()) {
+      state.current = await api(`/api/releases/${state.current.id}/boss-approve`, {
+        method: 'POST',
+        body: JSON.stringify({ reviewer: state.user.username, comment: '终审通过' }),
+      });
+      toast('终审通过，可以部署了');
+    } else {
+      toast('双评审已提交，等待 juege 终审');
+    }
+  }
+
+  async function bossApproveOnly() {
     state.current = await api(`/api/releases/${state.current.id}/boss-approve`, {
       method: 'POST',
-      body: JSON.stringify({ reviewer: boss, comment: '终审通过' }),
+      body: JSON.stringify({ reviewer: state.user.username, comment: '终审通过' }),
     });
-    toast('第 3 步完成！可以部署了');
+    toast('终审通过，可以部署了');
   }
 
   async function deployGreen() {
@@ -1503,7 +1751,10 @@
       const step = currentStep(state.current);
       if (step === 1) await createRelease();
       else if (step === 2) await submitReview();
-      else if (step === 3) await completeApproval();
+      else if (step === 3) {
+        if (reviewsOK(state.current.items?.[0]) && isBoss()) await bossApproveOnly();
+        else await completeApproval();
+      }
       else if (step === 4) {
         $('loading').classList.remove('show');
         await deployGreen();
@@ -1548,20 +1799,7 @@
     }, 3000);
   }
 
-  async function boot() {
-    initSidebar();
-    initPageFromHash();
-    $('mainBtn').addEventListener('click', handleMainAction);
-    $('btnNewDeploy')?.addEventListener('click', resetDeploy);
-    $('blueMainBtn')?.addEventListener('click', handleBlueMainAction);
-    $('btnNewBlueDeploy')?.addEventListener('click', resetBlueDeploy);
-    $('btnExecSql')?.addEventListener('click', executeCustomSql);
-    $('btnExecBlueSql')?.addEventListener('click', executeBlueCustomSql);
-    $('btnLoadTemplate')?.addEventListener('click', loadTemplateIntoEditor);
-    $('btnBlueLoadTemplate')?.addEventListener('click', loadBlueTemplateIntoEditor);
-    $('btnToGreen')?.addEventListener('click', () => switchTraffic('green'));
-    $('btnToBlue')?.addEventListener('click', () => switchTraffic('blue'));
-    $('btnSyncBlue')?.addEventListener('click', syncBlue);
+  async function bootApp() {
     renderUI();
     renderBlueDeployUI();
     renderBlueLogs(null);
@@ -1570,6 +1808,7 @@
       await loadTraffic();
       await loadActiveDeploy();
       await loadSqlTemplates();
+      await loadDeploySnapshots();
       const list = await api('/api/releases');
       await loadList();
       await loadBlueList();
@@ -1589,6 +1828,30 @@
       $('modeBadge').textContent = '未连接';
       $('modeBadge').className = 'badge offline';
       toast('无法连接服务，请先运行 go run ./cmd/server', 'error');
+    }
+  }
+
+  async function boot() {
+    initSidebar();
+    initPageFromHash();
+    $('btnLogin')?.addEventListener('click', login);
+    $('loginPass')?.addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
+    $('btnLogout')?.addEventListener('click', logout);
+    $('btnRollbackGreen')?.addEventListener('click', () => rollbackDeploy('green'));
+    $('btnRollbackBlue')?.addEventListener('click', () => rollbackDeploy('blue'));
+    $('mainBtn').addEventListener('click', handleMainAction);
+    $('btnNewDeploy')?.addEventListener('click', resetDeploy);
+    $('blueMainBtn')?.addEventListener('click', handleBlueMainAction);
+    $('btnNewBlueDeploy')?.addEventListener('click', resetBlueDeploy);
+    $('btnExecSql')?.addEventListener('click', executeCustomSql);
+    $('btnExecBlueSql')?.addEventListener('click', executeBlueCustomSql);
+    $('btnLoadTemplate')?.addEventListener('click', loadTemplateIntoEditor);
+    $('btnBlueLoadTemplate')?.addEventListener('click', loadBlueTemplateIntoEditor);
+    $('btnToGreen')?.addEventListener('click', () => switchTraffic('green'));
+    $('btnToBlue')?.addEventListener('click', () => switchTraffic('blue'));
+    $('btnSyncBlue')?.addEventListener('click', syncBlue);
+    if (await restoreSession()) {
+      await bootApp();
     }
   }
 

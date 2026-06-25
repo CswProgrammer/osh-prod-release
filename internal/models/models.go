@@ -175,3 +175,75 @@ type ActionRequest struct {
 	Actor  string `json:"actor"`
 	Reason string `json:"reason,omitempty"`
 }
+
+type UserRole string
+
+const (
+	RoleAdmin  UserRole = "admin"
+	RoleNormal UserRole = "normal"
+)
+
+type User struct {
+	Username    string   `json:"username"`
+	Role        UserRole `json:"role"`
+	DisplayName string   `json:"display_name"`
+	IsAdmin     bool     `json:"is_admin"`
+	IsBoss      bool     `json:"is_boss"`
+}
+
+type UserRecord struct {
+	Username     string
+	PasswordHash string
+	Role         UserRole
+	DisplayName  string
+	CreatedAt    time.Time
+}
+
+func (u UserRecord) Public() User {
+	return User{
+		Username:    u.Username,
+		Role:        u.Role,
+		DisplayName: u.DisplayName,
+		IsAdmin:     u.Role == RoleAdmin,
+		IsBoss:      u.Role == RoleAdmin,
+	}
+}
+
+type Session struct {
+	Token     string
+	Username  string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token string `json:"token"`
+	User  User   `json:"user"`
+}
+
+type DeploySnapshot struct {
+	ID             string    `json:"id"`
+	ReleaseID      string    `json:"release_id,omitempty"`
+	DeployTarget   string    `json:"deploy_target"`
+	Title          string    `json:"title"`
+	BackendGitRef  string    `json:"backend_git_ref"`
+	FrontendGitRef string    `json:"frontend_git_ref"`
+	BackendSHA     string    `json:"backend_sha,omitempty"`
+	FrontendSHA    string    `json:"frontend_sha,omitempty"`
+	Actor          string    `json:"actor"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+type DeployRollbackRequest struct {
+	Target     string `json:"target"` // green|blue
+	SnapshotID string `json:"snapshot_id,omitempty"`
+	ToPrevious bool   `json:"to_previous"`
+	Actor      string `json:"actor"`
+	Reason     string `json:"reason,omitempty"`
+}

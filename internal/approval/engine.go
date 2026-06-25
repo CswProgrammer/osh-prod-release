@@ -67,8 +67,11 @@ func (e *Engine) AllItemsReviewOK(items []models.ChangeItem) (bool, string) {
 	return true, ""
 }
 
-// CanStartDeploy checks reviews + boss approval for normal release.
-func (e *Engine) CanStartDeploy(rel models.Release) (bool, string) {
+// CanStartDeploy checks reviews + boss approval; admins may bypass.
+func (e *Engine) CanStartDeploy(rel models.Release, adminBypass bool) (bool, string) {
+	if adminBypass {
+		return true, ""
+	}
 	ok, msg := e.AllItemsReviewOK(rel.Items)
 	if !ok {
 		return false, msg

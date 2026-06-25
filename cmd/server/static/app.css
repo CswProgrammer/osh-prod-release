@@ -1116,3 +1116,138 @@ a { color: var(--green); }
   background: rgba(0, 0, 0, 0.25);
   color: var(--text);
 }
+
+/* ── Login ── */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(34, 197, 94, 0.12), transparent),
+    radial-gradient(ellipse 60% 50% at 100% 100%, rgba(59, 130, 246, 0.08), transparent),
+    var(--bg);
+}
+
+.login-screen[hidden] {
+  display: none !important;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  padding: 32px;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.login-brand h2 {
+  margin: 0 0 4px;
+  font-size: 1.35rem;
+}
+
+.login-brand p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.login-card label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 14px 0 6px;
+}
+
+.login-card input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+}
+
+.btn-login {
+  width: 100%;
+  margin-top: 22px;
+}
+
+.login-hint {
+  margin: 16px 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.login-error {
+  margin: 12px 0 0;
+  color: #fca5a5;
+  font-size: 0.88rem;
+}
+
+.user-badge {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #86efac;
+}
+
+.user-badge.admin {
+  background: rgba(168, 85, 247, 0.15);
+  border-color: rgba(168, 85, 247, 0.35);
+  color: #d8b4fe;
+}
+
+.badge-logout {
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+.badge-logout:hover {
+  border-color: rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
+.rollback-panel { padding: 4px 0; }
+
+.rollback-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.rollback-item {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 0.84rem;
+}
+
+.rollback-item strong { display: block; margin-bottom: 4px; }
+
+.rollback-item .meta {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.btn-rollback {
+  width: 100%;
+  margin-top: 8px;
+}

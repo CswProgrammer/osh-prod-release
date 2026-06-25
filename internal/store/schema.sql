@@ -91,3 +91,34 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_change_items_release ON change_items(release_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_item ON reviews(item_id);
 CREATE INDEX IF NOT EXISTS idx_release_steps_release ON release_steps(release_id);
+
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'normal',
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    username TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS deploy_snapshots (
+    id TEXT PRIMARY KEY,
+    release_id TEXT,
+    deploy_target TEXT NOT NULL,
+    title TEXT NOT NULL,
+    backend_git_ref TEXT NOT NULL,
+    frontend_git_ref TEXT NOT NULL,
+    backend_sha TEXT,
+    frontend_sha TEXT,
+    actor TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'success',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deploy_snapshots_target ON deploy_snapshots(deploy_target, created_at);

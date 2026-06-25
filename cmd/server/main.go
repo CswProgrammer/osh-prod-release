@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"io/fs"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/juege/osh-prod-release/internal/api"
+	"github.com/juege/osh-prod-release/internal/auth"
 	"github.com/juege/osh-prod-release/internal/config"
 	"github.com/juege/osh-prod-release/internal/release"
 	"github.com/juege/osh-prod-release/internal/ssh"
@@ -44,7 +46,11 @@ func main() {
 	sshClient := ssh.New(cfg)
 	trafficSvc := traffic.New(st, sshClient)
 	svc := release.New(cfg, st, trafficSvc)
-	handler := api.New(cfg, svc)
+	authSvc := auth.New(cfg, st)
+	if err := authSvc.SeedUsers(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+	handler := api.New(cfg, svc, authSvc)
 
 	mux := http.NewServeMux()
 	handler.Register(mux)

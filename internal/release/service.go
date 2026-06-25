@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -60,6 +61,20 @@ func (s *Service) Create(ctx context.Context, req models.CreateReleaseRequest) (
 	}
 	_ = s.store.AddAudit(ctx, req.Author, "create_release", rel.ID, rel.Title)
 	return rel, nil
+}
+
+func (s *Service) ApplyAdminFastTrack(ctx context.Context, id, actor string) (*models.Release, error) {
+	if err := s.store.SetBossApproved(ctx, id, actor); err != nil {
+		return nil, err
+	}
+	_ = s.store.UpdateStep(ctx, id, "submit_review", "skipped", "管理员直通发布")
+	_ = s.store.UpdateStep(ctx, id, "item_reviews", "skipped", "管理员直通发布")
+	_ = s.store.UpdateStep(ctx, id, "boss_approve", "skipped", "管理员直通发布")
+	if err := s.store.UpdateReleaseStatus(ctx, id, models.StatusApproved); err != nil {
+		return nil, err
+	}
+	_ = s.store.AddAudit(ctx, actor, "admin_fast_track", id, "跳过双评审与终审")
+	return s.store.GetRelease(ctx, id)
 }
 
 func (s *Service) Get(ctx context.Context, id string) (*models.Release, error) {
@@ -123,7 +138,14 @@ func (s *Service) SubmitReview(ctx context.Context, itemID string, req models.Su
 	return s.store.GetRelease(ctx, item.ReleaseID)
 }
 
-func (s *Service) BossApprove(ctx context.Context, id string, req models.BossApproveRequest) (*models.Release, error) {
+func (s *Service) BossApprove(ctx context.Context, id string, req models.BossApproveRequest, actorIsBoss bool) (*models.Release, error) {
+	if !actorIsBoss {
+		boss := s.cfg.BossReviewer
+		if boss == "" {
+			boss = "juege"
+		}
+		return nil, fmt.Errorf("仅 %s 可终审通过", boss)
+	}
 	rel, err := s.store.GetRelease(ctx, id)
 	if err != nil {
 		return nil, err
@@ -148,7 +170,7 @@ func (s *Service) GetActiveDeploy(ctx context.Context) (*models.Release, error) 
 }
 
 // StartDeploy kicks off deploy in background and returns immediately (frontend polls status).
-func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Release, error) {
+func (s *Service) StartDeploy(ctx context.Context, id, actor string, adminBypass bool) (*models.Release, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,7 +189,7 @@ func (s *Service) StartDeploy(ctx context.Context, id, actor string) (*models.Re
 	if err != nil {
 		return nil, err
 	}
-	ok, msg := s.approval.CanStartDeploy(*rel)
+	ok, msg := s.approval.CanStartDeploy(*rel, adminBypass)
 	if !ok {
 		return nil, fmt.Errorf(msg)
 	}
@@ -330,6 +352,7 @@ func (s *Service) finishGreenDeploy(ctx context.Context, id, actor, msg string) 
 	_ = s.store.UpdateStep(ctx, id, "finish", "success", "绿环境部署完成")
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDone)
 	_ = s.store.AddAudit(ctx, actor, "green_deploy_done", id, msg)
+	s.recordDeploySnapshot(ctx, id, actor, "green")
 	return s.store.GetRelease(ctx, id)
 }
 
@@ -341,6 +364,7 @@ func (s *Service) finishBlueDeploy(ctx context.Context, id, actor, msg string) (
 	_ = s.store.UpdateStep(ctx, id, "finish", "success", "蓝环境部署完成")
 	_ = s.store.UpdateReleaseStatus(ctx, id, models.StatusDone)
 	_ = s.store.AddAudit(ctx, actor, "blue_deploy_done", id, msg)
+	s.recordDeploySnapshot(ctx, id, actor, "blue")
 	return s.store.GetRelease(ctx, id)
 }
 
@@ -452,4 +476,115 @@ func (s *Service) Rollback(ctx context.Context, id string, req models.ActionRequ
 
 func (s *Service) TrafficStatus(ctx context.Context) (string, error) {
 	return s.ssh.TrafficStatus(ctx)
+}
+
+func (s *Service) ListDeploySnapshots(ctx context.Context, target string) ([]models.DeploySnapshot, error) {
+	return s.store.ListDeploySnapshots(ctx, target, 20)
+}
+
+func (s *Service) recordDeploySnapshot(ctx context.Context, releaseID, actor, target string) {
+	rel, err := s.store.GetRelease(ctx, releaseID)
+	if err != nil {
+		return
+	}
+	title := rel.Title
+	if title == "" {
+		title = releaseID
+	}
+	_, _ = s.store.SaveDeploySnapshot(ctx, models.DeploySnapshot{
+		ReleaseID:      releaseID,
+		DeployTarget:   target,
+		Title:          title,
+		BackendGitRef:  s.cfg.GitHubBackendGitRef,
+		FrontendGitRef: s.cfg.GitHubFrontendGitRef,
+		Actor:          actor,
+		Status:         "success",
+	})
+}
+
+func (s *Service) RollbackDeploy(ctx context.Context, req models.DeployRollbackRequest, adminBypass bool) (*models.DeploySnapshot, error) {
+	if !adminBypass {
+		return nil, fmt.Errorf("仅管理员可执行部署版本回滚")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	target := strings.ToLower(strings.TrimSpace(req.Target))
+	if target == "" {
+		target = "green"
+	}
+	if target != "green" && target != "blue" {
+		return nil, fmt.Errorf("target must be green or blue")
+	}
+	if target == "blue" && s.traffic != nil {
+		if err := s.traffic.RequireProductionGreen(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	var snap *models.DeploySnapshot
+	var err error
+	if req.SnapshotID != "" {
+		snap, err = s.store.GetDeploySnapshot(ctx, req.SnapshotID)
+	} else {
+		snap, err = s.store.GetPreviousDeploySnapshot(ctx, target)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if snap.DeployTarget != target {
+		return nil, fmt.Errorf("快照目标环境不匹配")
+	}
+
+	backendRef := snap.BackendGitRef
+	frontendRef := snap.FrontendGitRef
+	if backendRef == "" {
+		backendRef = s.cfg.GitHubBackendGitRef
+	}
+	if frontendRef == "" {
+		frontendRef = s.cfg.GitHubFrontendGitRef
+	}
+
+	dispatchSince := time.Now().UTC().Add(-15 * time.Second)
+	out, errDeploy := s.deployGH.TriggerSlot149(ctx, backendRef, frontendRef, "rollback-"+snap.ID, target)
+	if errDeploy != nil {
+		return nil, errDeploy
+	}
+	ghaOut, waitErr := s.deployGH.WaitSlotWorkflows(ctx, dispatchSince, 30*time.Minute)
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	port := "28080"
+	if target == "blue" {
+		port = "58080"
+	}
+	waitOut, waitErr := s.ssh.WaitSlotAPI(ctx, target, port, 5*time.Minute)
+	if waitErr != nil {
+		return nil, waitErr
+	}
+
+	actor := req.Actor
+	if actor == "" {
+		actor = "ops"
+	}
+	rolled, err := s.store.SaveDeploySnapshot(ctx, models.DeploySnapshot{
+		ReleaseID:      snap.ReleaseID,
+		DeployTarget:   target,
+		Title:          "回滚→" + snap.Title,
+		BackendGitRef:  backendRef,
+		FrontendGitRef: frontendRef,
+		BackendSHA:     snap.BackendSHA,
+		FrontendSHA:    snap.FrontendSHA,
+		Actor:          actor,
+		Status:         "success",
+	})
+	if err != nil {
+		return nil, err
+	}
+	detail := out + "; GHA: " + ghaOut + "; " + waitOut
+	if req.Reason != "" {
+		detail += "; reason: " + req.Reason
+	}
+	_ = s.store.AddAudit(ctx, actor, "deploy_rollback", rolled.ID, detail)
+	return rolled, nil
 }
